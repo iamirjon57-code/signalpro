@@ -55,7 +55,15 @@ async def run_bot():
 async def amain():
     store.conn()
     log.info("Rejim: avto-savdo=%s, testnet=%s", config.AUTO_TRADE, config.BINANCE_TESTNET)
-    await asyncio.gather(run_web(), run_bot(), engine.loop())
+    if config.AUTO_TRADE:
+        from trader import load_state
+        try:
+            load_state()
+        except Exception as e:  # noqa: BLE001
+            log.error("Pozitsiyalarni tiklashda xato: %s", e)
+        if not config.BINANCE_TESTNET:
+            log.warning("DIQQAT: REAL PUL bilan avto-savdo yoqilgan")
+    await asyncio.gather(run_web(), run_bot(), engine.loop(), engine.tp_sl_loop())
 
 
 if __name__ == "__main__":

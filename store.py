@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS subscribers (
 CREATE TABLE IF NOT EXISTS watchlist (
   symbol TEXT PRIMARY KEY, added_at TEXT
 );
+CREATE TABLE IF NOT EXISTS positions (
+  symbol TEXT PRIMARY KEY, amount REAL, entry REAL, tp REAL, sl REAL, mode TEXT, ts TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_sig_time ON signals(created_at DESC);
 """
 
@@ -139,6 +142,28 @@ def remove_watch(symbol: str):
 
 def watchlist() -> list[str]:
     return [r["symbol"] for r in conn().execute("SELECT symbol FROM watchlist ORDER BY symbol").fetchall()]
+
+
+def save_position(symbol: str, pos: dict):
+    with _lock:
+        conn().execute(
+            "INSERT OR REPLACE INTO positions (symbol,amount,entry,tp,sl,mode,ts) VALUES (?,?,?,?,?,?,?)",
+            (symbol, pos["amount"], pos["entry"], pos["tp"], pos["sl"], pos.get("mode", ""),
+             pos.get("ts", _now())),
+        )
+        conn().commit()
+
+
+def delete_position(symbol: str):
+    with _lock:
+        conn().execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+        conn().commit()
+
+
+def load_positions() -> dict[str, dict]:
+    rows = conn().execute("SELECT * FROM positions").fetchall()
+    return {r["symbol"]: {"amount": r["amount"], "entry": r["entry"], "tp": r["tp"],
+                          "sl": r["sl"], "mode": r["mode"], "ts": r["ts"]} for r in rows}
 
 
 def stats() -> dict:

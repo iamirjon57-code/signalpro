@@ -19,6 +19,7 @@ log = logging.getLogger("trader")
 
 _ex: ccxt.binance | None = None
 _positions: dict[str, dict] = {}   # symbol -> {amount, entry, tp, sl, ts}
+_loaded = False
 
 
 class TradeError(Exception):
@@ -59,7 +60,20 @@ def balance(quote: str | None = None) -> dict:
     }
 
 
+def load_state():
+    """Qayta ishga tushganda ochiq pozitsiyalarni bazadan tiklaydi."""
+    global _loaded
+    if _loaded:
+        return
+    _positions.update(store.load_positions())
+    _loaded = True
+    if _positions:
+        log.info("Bazadan %d ta ochiq pozitsiya tiklandi: %s",
+                 len(_positions), ", ".join(_positions))
+
+
 def positions() -> dict[str, dict]:
+    load_state()
     return dict(_positions)
 
 
@@ -73,7 +87,17 @@ def _daily_pnl() -> float:
     return pnl
 
 
+def _min_cost(symbol: str) -> float:
+    """Binance'ning shu juftlik uchun minimal buyurtma qiymati (USDT)."""
+    try:
+        m = exchange().market(symbol)
+        return float((m.get("limits", {}).get("cost", {}) or {}).get("min") or 0) or 5.0
+    except Exception:  # noqa: BLE001
+        return 5.0
+
+
 def _guard(symbol: str, side: str):
+    load_state()
     if not config.AUTO_TRADE:
         raise TradeError("AUTO_TRADE=false — avto-savdo o'chiq")
     if side == "buy":
@@ -83,6 +107,14 @@ def _guard(symbol: str, side: str):
             raise TradeError(f"{symbol} bo'yicha pozitsiya allaqachon ochiq")
         if _daily_pnl() <= -abs(config.DAILY_LOSS_LIMIT_USDT):
             raise TradeError("Kunlik zarar limitiga yetildi — savdo to'xtatildi")
+        need = _min_cost(symbol)
+        if config.TRADE_AMOUNT_USDT < need:
+            raise TradeError(
+                f"{symbol} uchun minimal buyurtma {need:g} USDT, "
+                f"TRADE_AMOUNT_USDT esa {config.TRADE_AMOUNT_USDT:g}")
+        free = balance()["free"]
+        if free < config.TRADE_AMOUNT_USDT:
+            raise TradeError(f"Balans yetarli emas: {free:.2f} USDT")
     else:
         if symbol not in _positions:
             raise TradeError(f"{symbol} bo'yicha ochiq pozitsiya yo'q")
@@ -101,15 +133,18 @@ def execute(signal) -> dict:
         amount = config.TRADE_AMOUNT_USDT / signal.price
         amount = float(ex.amount_to_precision(symbol, amount))
         order = ex.create_order(symbol, "market", "buy", amount)
-        _positions[symbol] = {
-            "amount": amount, "entry": signal.price,
-            "tp": signal.take_profit, "sl": signal.stop_loss,
+        pos = {
+            "amount": amount, "entry": float(order.get("average") or signal.price),
+            "tp": signal.take_profit, "sl": signal.stop_loss, "mode": mode(),
             "ts": datetime.now(timezone.utc).isoformat(),
         }
+        _positions[symbol] = pos
+        store.save_position(symbol, pos)
     else:
         amount = _positions[symbol]["amount"]
         order = ex.create_order(symbol, "market", "sell", amount)
         _positions.pop(symbol, None)
+        store.delete_position(symbol)
 
     cost = float(order.get("cost") or amount * signal.price)
     store.save_trade(
@@ -124,6 +159,7 @@ def execute(signal) -> dict:
 
 def check_tp_sl(price_fn) -> list[dict]:
     """Ochiq pozitsiyalarda TP/SL ga yetganini tekshirib, kerak bo'lsa yopadi."""
+    load_state()
     closed = []
     for symbol, pos in list(_positions.items()):
         price = price_fn(symbol)
@@ -143,6 +179,7 @@ def check_tp_sl(price_fn) -> list[dict]:
                 note=f"{hit} hit, PnL={pnl:.2f}",
             )
             _positions.pop(symbol, None)
+            store.delete_position(symbol)
             closed.append({"symbol": symbol, "reason": hit, "price": price, "pnl": round(pnl, 2)})
         except Exception as e:  # noqa: BLE001
             log.error("TP/SL yopishda xato %s: %s", symbol, e)

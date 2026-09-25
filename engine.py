@@ -72,15 +72,26 @@ async def scan_once(force_notify: bool = False, full: bool = False) -> list[sign
                 msg += f"\n\n❌ Savdo xatosi: {e}"
         await broadcast(msg)
 
-    # TP/SL tekshiruvi
-    if config.AUTO_TRADE:
-        closed = await asyncio.to_thread(trader.check_tp_sl, data.last_price)
-        for c in closed:
-            await broadcast(
-                f"📌 Pozitsiya yopildi: `{c['symbol']}` ({c['reason']}) "
-                f"narx `{c['price']:g}`, PnL `{c['pnl']:+.2f}` USDT"
-            )
     return found
+
+
+async def tp_sl_loop():
+    """Ochiq pozitsiyalarni har daqiqada tekshiradi (skanerdan mustaqil)."""
+    if not config.AUTO_TRADE:
+        return
+    await asyncio.sleep(20)
+    while True:
+        try:
+            if trader.positions():
+                closed = await asyncio.to_thread(trader.check_tp_sl, data.last_price)
+                for c in closed:
+                    await broadcast(
+                        f"📌 Pozitsiya yopildi: `{c['symbol']}` ({c['reason']}) "
+                        f"narx `{c['price']:g}`, PnL `{c['pnl']:+.2f}` USDT"
+                    )
+        except Exception as ex:  # noqa: BLE001
+            log.error("tp_sl_loop xato: %s", ex)
+        await asyncio.sleep(60)
 
 
 async def loop():
