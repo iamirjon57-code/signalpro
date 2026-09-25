@@ -50,6 +50,8 @@ STOCK_SYMBOLS = _list("STOCK_SYMBOLS", "AAPL,MSFT,NVDA,TSLA,AMZN")
 FOREX_SYMBOLS = _list("FOREX_SYMBOLS", "EUR/USD,GBP/USD,USD/JPY,XAU/USD")
 TIMEFRAME = os.getenv("TIMEFRAME", "1h")
 SCAN_INTERVAL_SEC = int(_f("SCAN_INTERVAL_SEC", 900))   # 15 daqiqa
+# Aksiya/forex har necha skanda bir marta tekshiriladi (Twelve Data kunlik limiti uchun)
+TD_EVERY_N_SCANS = int(_f("TD_EVERY_N_SCANS", 2))
 
 # --- Signal chegaralari ---
 RSI_PERIOD = int(_f("RSI_PERIOD", 14))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import ccxt
@@ -14,14 +15,30 @@ log = logging.getLogger("data")
 
 _TD_URL = "https://api.twelvedata.com/time_series"
 _cache: dict[str, tuple[float, pd.DataFrame]] = {}
-CACHE_TTL = 240  # soniya
+CACHE_TTL = 240          # kripto uchun (soniya)
+TD_CACHE_TTL = 1800      # Twelve Data uchun — bepul tarif kreditini tejaydi
+
+# Twelve Data bepul tarifi: daqiqasiga 8 so'rov. Shu sabab so'rovlar oralig'i cheklanadi.
+_td_lock = threading.Lock()
+_td_last = 0.0
+TD_MIN_GAP = 8.0
 
 
-def _cached(key: str):
+def _cached(key: str, ttl: float = CACHE_TTL):
     hit = _cache.get(key)
-    if hit and time.time() - hit[0] < CACHE_TTL:
+    if hit and time.time() - hit[0] < ttl:
         return hit[1]
     return None
+
+
+def _td_throttle():
+    """Twelve Data so'rovlari orasida kamida TD_MIN_GAP soniya bo'lishini ta'minlaydi."""
+    global _td_last
+    with _td_lock:
+        wait = TD_MIN_GAP - (time.time() - _td_last)
+        if wait > 0:
+            time.sleep(wait)
+        _td_last = time.time()
 
 
 def _put(key: str, df: pd.DataFrame):
@@ -62,9 +79,10 @@ def fetch_twelve(symbol: str, timeframe: str = "1h", limit: int = 300) -> pd.Dat
     if not config.TWELVE_DATA_KEY:
         raise RuntimeError("TWELVE_DATA_KEY o'rnatilmagan — aksiya/forex tahlili ishlamaydi")
     key = f"t:{symbol}:{timeframe}:{limit}"
-    hit = _cached(key)
+    hit = _cached(key, TD_CACHE_TTL)
     if hit is not None:
         return hit
+    _td_throttle()
     r = requests.get(
         _TD_URL,
         params={

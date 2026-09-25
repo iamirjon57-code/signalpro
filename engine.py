@@ -15,6 +15,7 @@ log = logging.getLogger("engine")
 # Telegram bot tomonidan o'rnatiladi (broadcast funksiyasi)
 notifier = None
 last_scan: list[dict] = []
+_cycle = 0
 
 
 async def broadcast(text: str):
@@ -27,13 +28,22 @@ async def broadcast(text: str):
 
 
 def symbols_to_scan() -> list[str]:
-    extra = store.watchlist()
-    base = data.all_symbols()
-    return list(dict.fromkeys(base + extra))
+    """Kripto har safar; aksiya/forex esa har TD_EVERY_N_SCANS siklda bir marta."""
+    syms = list(config.CRYPTO_SYMBOLS)
+    if not config.TWELVE_DATA_KEY:
+        td_turn = False
+    else:
+        td_turn = _cycle % max(1, config.TD_EVERY_N_SCANS) == 0
+    if td_turn:
+        syms += list(config.STOCK_SYMBOLS) + list(config.FOREX_SYMBOLS)
+    syms += [s for s in store.watchlist() if td_turn or data.asset_class(s) == "crypto"]
+    return list(dict.fromkeys(syms))
 
 
 async def scan_once(force_notify: bool = False) -> list[signals.Signal]:
+    global _cycle
     syms = symbols_to_scan()
+    _cycle += 1
     found = await asyncio.to_thread(signals.scan, syms)
     global last_scan
     last_scan = [s.dict() for s in found]
