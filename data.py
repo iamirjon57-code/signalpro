@@ -20,8 +20,9 @@ TD_CACHE_TTL = 1800      # Twelve Data uchun — bepul tarif kreditini tejaydi
 
 # Twelve Data bepul tarifi: daqiqasiga 8 so'rov. Shu sabab so'rovlar oralig'i cheklanadi.
 _td_lock = threading.Lock()
-_td_last = 0.0
+_td_next = 0.0
 TD_MIN_GAP = 8.0
+TD_MAX_WAIT = 25.0
 
 
 def _cached(key: str, ttl: float = CACHE_TTL):
@@ -32,13 +33,20 @@ def _cached(key: str, ttl: float = CACHE_TTL):
 
 
 def _td_throttle():
-    """Twelve Data so'rovlari orasida kamida TD_MIN_GAP soniya bo'lishini ta'minlaydi."""
-    global _td_last
+    """Twelve Data so'rovlari orasida TD_MIN_GAP soniya oralig'ini ta'minlaydi.
+
+    Navbat uzun bo'lsa kutib o'tirmasdan xato qaytaradi — sayt qotib qolmaydi.
+    """
+    global _td_next
     with _td_lock:
-        wait = TD_MIN_GAP - (time.time() - _td_last)
-        if wait > 0:
-            time.sleep(wait)
-        _td_last = time.time()
+        now = time.time()
+        slot = max(now, _td_next)
+        if slot - now > TD_MAX_WAIT:
+            raise RuntimeError("Twelve Data navbati band — bir daqiqadan keyin urinib ko'ring")
+        _td_next = slot + TD_MIN_GAP
+    delay = slot - time.time()
+    if delay > 0:
+        time.sleep(delay)
 
 
 def _put(key: str, df: pd.DataFrame):
