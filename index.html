@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal Pro — Savdo signallari</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#0b0f17; --surface:#131a26; --surface2:#1a2333; --line:#243044;
+  --text:#e7edf7; --muted:#8b9ab1; --accent:#5b9cff;
+  --buy:#28c07f; --sell:#f2555a; --hold:#8b9ab1; --warn:#f5a524;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:15px}
+a{color:var(--accent);text-decoration:none}
+header{position:sticky;top:0;z-index:10;background:rgba(11,15,23,.92);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:14px 16px}
+.wrap{max-width:1200px;margin:0 auto}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.logo{font-weight:700;font-size:19px;letter-spacing:-.3px}
+.logo span{color:var(--accent)}
+.badge{font-size:12px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);
+  background:var(--surface2);color:var(--muted)}
+.badge.live{color:var(--sell);border-color:var(--sell)}
+.badge.test{color:var(--warn);border-color:var(--warn)}
+main{max-width:1200px;margin:0 auto;padding:16px}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:16px}
+.tab{padding:8px 14px;border-radius:9px;border:1px solid var(--line);background:var(--surface);
+  color:var(--muted);cursor:pointer;white-space:nowrap;font-size:14px}
+.tab.on{background:var(--accent);border-color:var(--accent);color:#04101f;font-weight:600}
+.grid{display:grid;gap:12px}
+.cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px}
+.card h4{margin:0 0 6px;font-size:12px;color:var(--muted);font-weight:500;text-transform:uppercase;
+  letter-spacing:.5px}
+.card .v{font-size:24px;font-weight:700}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;
+  margin-top:14px}
+.panel h3{margin:0 0 12px;font-size:16px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;
+  padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:10px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+.sym{font-weight:600;cursor:pointer}
+.sym:hover{color:var(--accent)}
+.pill{padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700}
+.BUY{background:rgba(40,192,127,.15);color:var(--buy)}
+.SELL{background:rgba(242,85,90,.15);color:var(--sell)}
+.HOLD{background:rgba(139,154,177,.13);color:var(--hold)}
+.bar{height:5px;background:var(--surface2);border-radius:99px;overflow:hidden;min-width:60px}
+.bar i{display:block;height:100%;background:var(--accent)}
+input,select,button{background:var(--surface2);border:1px solid var(--line);color:var(--text);
+  padding:9px 12px;border-radius:9px;font-size:14px;font-family:inherit}
+button{cursor:pointer;font-weight:600}
+button.primary{background:var(--accent);border-color:var(--accent);color:#04101f}
+button:disabled{opacity:.5;cursor:default}
+.muted{color:var(--muted);font-size:13px}
+.hide{display:none}
+.news li{margin-bottom:10px;line-height:1.45}
+.chartbox{position:relative;height:320px}
+.chartbox.sm{height:160px}
+.fund{border:1px solid var(--line);border-radius:11px;padding:13px;background:var(--surface2)}
+.fund b{font-size:14px}
+.hold-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;color:var(--muted)}
+.hold-row span:last-child{color:var(--text);font-variant-numeric:tabular-nums}
+@media(max-width:640px){.v{font-size:20px}td,th{padding:8px 6px}}
+</style>
+</head>
+<body>
+<header><div class="wrap row" style="justify-content:space-between">
+  <div class="logo">Signal<span>Pro</span></div>
+  <div class="row">
+    <span class="badge" id="modeBadge">—</span>
+    <span class="badge" id="tfBadge">—</span>
+    <button id="scanBtn" class="primary">Tekshirish</button>
+  </div>
+</div></header>
+
+<main>
+  <div class="grid cards">
+    <div class="card"><h4>Jami signal</h4><div class="v" id="sTotal">—</div></div>
+    <div class="card"><h4>Sotib olish</h4><div class="v" style="color:var(--buy)" id="sBuy">—</div></div>
+    <div class="card"><h4>Sotish</h4><div class="v" style="color:var(--sell)" id="sSell">—</div></div>
+    <div class="card"><h4>Savdolar</h4><div class="v" id="sTrades">—</div></div>
+    <div class="card"><h4>Obunachi</h4><div class="v" id="sSubs">—</div></div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <div class="tab on" data-t="signals">Signallar</div>
+    <div class="tab" data-t="chart">Grafik & tahlil</div>
+    <div class="tab" data-t="investors">Yirik investorlar</div>
+    <div class="tab" data-t="news">Yangiliklar</div>
+    <div class="tab" data-t="trades">Savdolar</div>
+  </div>
+
+  <section id="v-signals">
+    <div class="panel">
+      <h3>Joriy signallar</h3>
+      <div id="sigWrap" class="muted">Yuklanmoqda…</div>
+    </div>
+  </section>
+
+  <section id="v-chart" class="hide">
+    <div class="panel">
+      <div class="row" style="margin-bottom:12px">
+        <input id="symIn" placeholder="BTC/USDT, AAPL, EUR/USD" style="flex:1;min-width:180px">
+        <select id="tfIn">
+          <option>15m</option><option>1h</option><option>4h</option><option>1d</option>
+        </select>
+        <button class="primary" id="anBtn">Tahlil</button>
+      </div>
+      <div id="anRes" class="muted">Aktiv nomini kiriting yoki jadvaldan tanlang.</div>
+      <div class="chartbox" style="margin-top:14px"><canvas id="cPrice"></canvas></div>
+      <div class="chartbox sm" style="margin-top:10px"><canvas id="cRsi"></canvas></div>
+    </div>
+  </section>
+
+  <section id="v-investors" class="hide">
+    <div class="panel">
+      <h3>Milliarderlar portfeli — SEC 13F</h3>
+      <p class="muted">Eng yirik fondlar rasmiy hisobotida e'lon qilingan aksiyalar.</p>
+      <div class="grid" id="funds" style="grid-template-columns:repeat(auto-fit,minmax(270px,1fr))">
+        <span class="muted">Yuklanmoqda…</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="v-news" class="hide">
+    <div class="panel">
+      <div class="row" style="margin-bottom:12px">
+        <input id="nIn" placeholder="bitcoin, AAPL, gold price" style="flex:1;min-width:180px">
+        <button class="primary" id="nBtn">Qidirish</button>
+      </div>
+      <ul class="news" id="newsList"><li class="muted">Qidiruv so'zini kiriting.</li></ul>
+    </div>
+  </section>
+
+  <section id="v-trades" class="hide">
+    <div class="panel"><h3>Ochiq pozitsiyalar</h3><div id="posWrap" class="muted">—</div></div>
+    <div class="panel"><h3>Savdolar tarixi</h3><div id="trWrap" class="muted">—</div></div>
+  </section>
+
+  <p class="muted" style="margin:24px 0;text-align:center">
+    Signallar faqat axborot maqsadida. Bu moliyaviy maslahat emas — savdo riski o'zingizda.
+  </p>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const key = new URLSearchParams(location.search).get('key');
+const api = async (p, o={}) => {
+  const url = p + (key ? (p.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key) : '');
+  const r = await fetch(url, o);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.status);
+  return r.json();
+};
+const fmt = n => n == null ? '—' : (Math.abs(n) >= 1000 ? n.toLocaleString('en-US',{maximumFractionDigits:2})
+  : Number(n).toPrecision(6).replace(/\.?0+$/,''));
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+  ['signals','chart','investors','news','trades'].forEach(v =>
+    $('#v-' + v).classList.toggle('hide', v !== t.dataset.t));
+  if (t.dataset.t === 'investors') loadFunds();
+  if (t.dataset.t === 'trades') loadTrades();
+});
+
+async function loadConfig(){
+  const c = await api('/api/config');
+  const b = $('#modeBadge');
+  b.textContent = 'Avto-savdo: ' + c.mode;
+  b.className = 'badge ' + (c.mode === 'LIVE' ? 'live' : c.mode === 'testnet' ? 'test' : '');
+  $('#tfBadge').textContent = c.timeframe + ' · ' +
+    (c.crypto.length + c.stocks.length + c.forex.length + c.watch.length) + ' aktiv';
+}
+async function loadStats(){
+  const s = await api('/api/stats');
+  $('#sTotal').textContent = s.signals_total; $('#sBuy').textContent = s.buy;
+  $('#sSell').textContent = s.sell; $('#sTrades').textContent = s.trades;
+  $('#sSubs').textContent = s.subscribers;
+}
+async function loadSignals(){
+  const d = await api('/api/signals?limit=40');
+  const rows = d.live.length ? d.live : d.history;
+  if (!rows.length){ $('#sigWrap').textContent = 'Hali signal yo\'q — "Tekshirish" tugmasini bosing.'; return; }
+  $('#sigWrap').innerHTML = `<table><thead><tr>
+    <th>Aktiv</th><th>Tur</th><th>Signal</th><th>Narx</th><th>RSI</th><th>Trend</th>
+    <th>Ishonch</th><th>TP / SL</th></tr></thead><tbody>` +
+    rows.map(r => `<tr>
+      <td class="sym" onclick="openChart('${r.symbol}')">${r.symbol}</td>
+      <td class="muted">${r.kind}</td>
+      <td><span class="pill ${r.action}">${r.action}</span></td>
+      <td>${fmt(r.price)}</td>
+      <td>${r.rsi.toFixed(1)}</td>
+      <td class="muted">${r.trend}</td>
+      <td><div class="bar"><i style="width:${r.confidence}%"></i></div></td>
+      <td class="muted">${fmt(r.take_profit)} / ${fmt(r.stop_loss)}</td></tr>`).join('') +
+    '</tbody></table>';
+}
+$('#scanBtn').onclick = async () => {
+  const b = $('#scanBtn'); b.disabled = true; b.textContent = 'Tekshirilmoqda…';
+  try { await api('/api/scan', {method:'POST'}); await loadSignals(); await loadStats(); }
+  catch(e){ alert('Xato: ' + e.message); }
+  b.disabled = false; b.textContent = 'Tekshirish';
+};
+
+let pc, rc;
+function openChart(sym){
+  document.querySelector('.tab[data-t="chart"]').click();
+  $('#symIn').value = sym; analyze();
+}
+async function analyze(){
+  const sym = $('#symIn').value.trim().toUpperCase(); if (!sym) return;
+  const tf = $('#tfIn').value;
+  $('#anRes').textContent = 'Tahlil qilinmoqda…';
+  try {
+    const [s, ch] = await Promise.all([
+      api(`/api/analyze?symbol=${encodeURIComponent(sym)}&timeframe=${tf}`),
+      api(`/api/chart?symbol=${encodeURIComponent(sym)}&timeframe=${tf}`)]);
+    $('#anRes').innerHTML = `<div class="row" style="gap:14px">
+      <span class="pill ${s.action}">${s.action}</span>
+      <b style="font-size:18px">${s.symbol}</b>
+      <span>Narx: <b>${fmt(s.price)}</b></span>
+      <span class="muted">Ishonch ${s.confidence}% · RSI ${s.rsi.toFixed(1)} · ${s.trend}</span>
+      <span class="muted">🎯 ${fmt(s.take_profit)} 🛑 ${fmt(s.stop_loss)}</span></div>
+      <ul class="muted" style="margin:10px 0 0;padding-left:18px">${
+        s.reasons.map(r => `<li>${r}</li>`).join('')}</ul>`;
+    drawCharts(ch);
+  } catch(e){ $('#anRes').textContent = 'Xato: ' + e.message; }
+}
+$('#anBtn').onclick = analyze;
+$('#symIn').addEventListener('keydown', e => e.key === 'Enter' && analyze());
+
+function drawCharts(d){
+  const grid = {color:'#243044'}, tick = {color:'#8b9ab1', maxTicksLimit:7};
+  const lbl = d.time.map(t => t.slice(5,16).replace('T',' '));
+  pc?.destroy(); rc?.destroy();
+  pc = new Chart($('#cPrice'), {type:'line', data:{labels:lbl, datasets:[
+      {label:'Narx', data:d.close, borderColor:'#5b9cff', borderWidth:2, pointRadius:0, tension:.2},
+      {label:'EMA20', data:d.ma_fast, borderColor:'#28c07f', borderWidth:1.2, pointRadius:0},
+      {label:'EMA50', data:d.ma_slow, borderColor:'#f5a524', borderWidth:1.2, pointRadius:0}]},
+    options:{maintainAspectRatio:false, interaction:{intersect:false, mode:'index'},
+      plugins:{legend:{labels:{color:'#8b9ab1', boxWidth:12}}},
+      scales:{x:{grid, ticks:tick}, y:{grid, ticks:{color:'#8b9ab1'}}}}});
+  rc = new Chart($('#cRsi'), {type:'line', data:{labels:lbl, datasets:[
+      {label:'RSI', data:d.rsi, borderColor:'#a78bfa', borderWidth:1.6, pointRadius:0, fill:false}]},
+    options:{maintainAspectRatio:false, plugins:{legend:{labels:{color:'#8b9ab1', boxWidth:12}}},
+      scales:{x:{display:false}, y:{min:0, max:100, grid, ticks:{color:'#8b9ab1', stepSize:25}}}}});
+}
+
+let fundsDone = false;
+async function loadFunds(){
+  if (fundsDone) return; fundsDone = true;
+  try {
+    const d = await api('/api/investors');
+    $('#funds').innerHTML = d.funds.map(f => `<div class="fund">
+      <b>${f.fund}</b><div class="muted" style="margin:3px 0 8px">${f.filed} · ${f.positions} pozitsiya</div>
+      ${f.top.slice(0,8).map(h => `<div class="hold-row"><span>${h.name}</span><span>${h.pct}%</span></div>`).join('')}
+    </div>`).join('') || '<span class="muted">Ma\'lumot yo\'q</span>';
+  } catch(e){ $('#funds').innerHTML = '<span class="muted">Xato: ' + e.message + '</span>'; fundsDone = false; }
+}
+
+$('#nBtn').onclick = async () => {
+  const q = $('#nIn').value.trim() || 'stock market';
+  $('#newsList').innerHTML = '<li class="muted">Qidirilmoqda…</li>';
+  const d = await api('/api/news?q=' + encodeURIComponent(q));
+  $('#newsList').innerHTML = d.items.map(i =>
+    `<li><a href="${i.link}" target="_blank" rel="noopener">${i.title}</a>
+     <div class="muted">${i.date}</div></li>`).join('') || '<li class="muted">Topilmadi</li>';
+};
+
+async function loadTrades(){
+  try {
+    const d = await api('/api/trades');
+    const pos = Object.entries(d.positions);
+    $('#posWrap').innerHTML = pos.length ? `<table><thead><tr><th>Aktiv</th><th>Hajm</th>
+      <th>Kirish</th><th>TP</th><th>SL</th></tr></thead><tbody>` + pos.map(([s,p]) =>
+      `<tr><td class="sym">${s}</td><td>${fmt(p.amount)}</td><td>${fmt(p.entry)}</td>
+       <td>${fmt(p.tp)}</td><td>${fmt(p.sl)}</td></tr>`).join('') + '</tbody></table>'
+      : 'Ochiq pozitsiya yo\'q.';
+    $('#trWrap').innerHTML = d.trades.length ? `<table><thead><tr><th>Vaqt</th><th>Aktiv</th>
+      <th>Yo'nalish</th><th>Hajm</th><th>Narx</th><th>Rejim</th></tr></thead><tbody>` +
+      d.trades.map(t => `<tr><td class="muted">${(t.created_at||'').slice(0,16).replace('T',' ')}</td>
+       <td class="sym">${t.symbol}</td><td><span class="pill ${t.side==='buy'?'BUY':'SELL'}">
+       ${t.side.toUpperCase()}</span></td><td>${fmt(t.amount)}</td><td>${fmt(t.price)}</td>
+       <td class="muted">${t.mode}</td></tr>`).join('') + '</tbody></table>' : 'Savdolar yo\'q.';
+  } catch(e){ $('#posWrap').textContent = 'Xato: ' + e.message; }
+}
+
+loadConfig(); loadStats(); loadSignals();
+setInterval(() => { loadSignals(); loadStats(); }, 60000);
+</script>
+</body>
+</html>
