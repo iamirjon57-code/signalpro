@@ -40,10 +40,14 @@ def symbols_to_scan() -> list[str]:
     return list(dict.fromkeys(syms))
 
 
-async def scan_once(force_notify: bool = False) -> list[signals.Signal]:
+async def scan_once(force_notify: bool = False, full: bool = False) -> list[signals.Signal]:
+    """full=True — qo'lda so'ralgan skan: aksiya va forex ham albatta tekshiriladi."""
     global _cycle
-    syms = symbols_to_scan()
-    _cycle += 1
+    if full:
+        syms = list(dict.fromkeys(data.all_symbols() + store.watchlist()))
+    else:
+        syms = symbols_to_scan()
+        _cycle += 1
     found = await asyncio.to_thread(signals.scan, syms)
     global last_scan
     last_scan = [s.dict() for s in found]

@@ -73,12 +73,19 @@ async def cmd_signal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    m = await update.message.reply_text("⏳ Barcha aktivlar tekshirilmoqda...")
+    m = await update.message.reply_text(
+        "⏳ Barcha aktivlar tekshirilmoqda (kripto + aksiya + forex, bir daqiqagacha)...")
     try:
-        res = await engine.scan_once(force_notify=False)
+        res = await engine.scan_once(force_notify=False, full=True)
         act = [s for s in res if s.action != "HOLD"]
         if not act:
-            await m.edit_text(f"Tekshirildi: {len(res)} ta aktiv. Hozircha aniq signal yo'q.")
+            by = {}
+            for s in res:
+                by[s.kind] = by.get(s.kind, 0) + 1
+            detail = ", ".join(f"{v} {k}" for k, v in sorted(by.items()))
+            await m.edit_text(
+                f"Tekshirildi: {len(res)} ta aktiv ({detail}). Hozircha aniq signal yo'q — "
+                "barchasi HOLD holatida.")
             return
         txt = "\n\n".join(s.text() for s in act[:8])
         await m.edit_text(txt, parse_mode=ParseMode.MARKDOWN)

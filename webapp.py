@@ -90,7 +90,7 @@ async def api_chart(symbol: str = Query(...), timeframe: str | None = None, limi
 @app.post("/api/scan")
 async def api_scan(request: Request):
     _auth(request)
-    res = await engine.scan_once()
+    res = await engine.scan_once(full=True)
     return {"count": len(res), "signals": [s.dict() for s in res]}
 
 
