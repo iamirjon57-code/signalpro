@@ -100,7 +100,11 @@ def fetch_twelve(symbol: str, timeframe: str = "1h", limit: int = 300) -> pd.Dat
     df = pd.DataFrame(j["values"]).iloc[::-1].reset_index(drop=True)
     for col in ("open", "high", "low", "close"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0)
+    # Forex/metall juftliklarida Twelve Data hajm (volume) bermaydi
+    if "volume" in df.columns:
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+    else:
+        df["volume"] = 0.0
     df["time"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
     return _put(key, df[["time", "open", "high", "low", "close", "volume"]])
 
