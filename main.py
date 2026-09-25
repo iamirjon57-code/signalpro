@@ -19,6 +19,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     datefmt="%H:%M:%S",
 )
+# httpx har bir so'rov URL'ini log qiladi — Telegram tokeni logda ko'rinib qolmasligi uchun o'chiriladi
+for _noisy in ("httpx", "httpcore", "telegram.ext.Updater"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 log = logging.getLogger("main")
 
 
