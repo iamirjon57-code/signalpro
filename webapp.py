@@ -15,6 +15,7 @@ import investors
 import signals
 import store
 import trader
+import setup_page
 from indicators import enrich
 
 log = logging.getLogger("web")
@@ -34,6 +35,38 @@ def _auth(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return (BASE / "index.html").read_text(encoding="utf-8")
+
+
+# ---------- Brauzer orqali sozlash ----------
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_ui():
+    if not setup_page.enabled():
+        raise HTTPException(404, "Sozlash sahifasi o'chirilgan")
+    return setup_page.PAGE
+
+
+@app.get("/api/setup/status")
+async def setup_status():
+    if not setup_page.enabled():
+        raise HTTPException(404)
+    return {"fields": setup_page.status()}
+
+
+@app.post("/api/setup")
+async def setup_save(request: Request):
+    if not setup_page.enabled():
+        raise HTTPException(404)
+    body = await request.json()
+    if not setup_page.check_token(body.get("token", "")):
+        raise HTTPException(401, "Sozlash kaliti noto'g'ri")
+    values = body.get("values") or {}
+    if not isinstance(values, dict):
+        raise HTTPException(400, "Noto'g'ri format")
+    n = setup_page.write_env(values)
+    if n:
+        setup_page.restart_service()
+    return {"updated": n}
 
 
 @app.get("/health")
