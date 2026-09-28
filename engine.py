@@ -64,7 +64,9 @@ async def scan_once(force_notify: bool = False, full: bool = False) -> list[sign
         if config.AUTO_TRADE and sig.kind == "crypto":
             try:
                 res = await asyncio.to_thread(trader.execute, sig)
-                msg += f"\n\n🤖 Avto-savdo bajarildi ({res['mode']}): {res['side']} {res['amount']:g}"
+                msg += f"\n\n🤖 Avto-savdo ({res['mode']}): {res['side']} {res['amount']:g} @ {res['price']:g}"
+            except trader.NoPosition:
+                pass  # SELL signali, lekin pozitsiya yo'q — faqat signal yuboriladi
             except trader.TradeError as e:
                 msg += f"\n\n⚠️ Avto-savdo o'tkazilmadi: {e}"
             except Exception as e:  # noqa: BLE001

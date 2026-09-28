@@ -42,6 +42,11 @@ def conn() -> sqlite3.Connection:
         _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
+        # Eski bazalar uchun migratsiya
+        for table, col in (("trades", "pnl"), ("positions", "cost")):
+            cols = {r["name"] for r in _conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                _conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} REAL")
         _conn.commit()
     return _conn
 
@@ -147,9 +152,10 @@ def watchlist() -> list[str]:
 def save_position(symbol: str, pos: dict):
     with _lock:
         conn().execute(
-            "INSERT OR REPLACE INTO positions (symbol,amount,entry,tp,sl,mode,ts) VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO positions (symbol,amount,entry,tp,sl,mode,ts,cost) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (symbol, pos["amount"], pos["entry"], pos["tp"], pos["sl"], pos.get("mode", ""),
-             pos.get("ts", _now())),
+             pos.get("ts", _now()), pos.get("cost")),
         )
         conn().commit()
 
@@ -163,7 +169,17 @@ def delete_position(symbol: str):
 def load_positions() -> dict[str, dict]:
     rows = conn().execute("SELECT * FROM positions").fetchall()
     return {r["symbol"]: {"amount": r["amount"], "entry": r["entry"], "tp": r["tp"],
-                          "sl": r["sl"], "mode": r["mode"], "ts": r["ts"]} for r in rows}
+                          "sl": r["sl"], "mode": r["mode"], "ts": r["ts"],
+                          "cost": r["cost"]} for r in rows}
+
+
+def realized_pnl_since(day: str) -> float:
+    """Berilgan sanadan (YYYY-MM-DD, UTC) beri yopilgan savdolarning jami PnL i."""
+    r = conn().execute(
+        "SELECT COALESCE(SUM(pnl),0) s FROM trades WHERE pnl IS NOT NULL AND created_at >= ?",
+        (day,),
+    ).fetchone()
+    return float(r["s"] or 0)
 
 
 def stats() -> dict:
@@ -173,5 +189,8 @@ def stats() -> dict:
         "buy": c.execute("SELECT COUNT(*) n FROM signals WHERE action='BUY'").fetchone()["n"],
         "sell": c.execute("SELECT COUNT(*) n FROM signals WHERE action='SELL'").fetchone()["n"],
         "trades": c.execute("SELECT COUNT(*) n FROM trades").fetchone()["n"],
+        "open_positions": c.execute("SELECT COUNT(*) n FROM positions").fetchone()["n"],
+        "realized_pnl": round(float(c.execute(
+            "SELECT COALESCE(SUM(pnl),0) s FROM trades WHERE pnl IS NOT NULL").fetchone()["s"]), 2),
         "subscribers": c.execute("SELECT COUNT(*) n FROM subscribers WHERE active=1").fetchone()["n"],
     }

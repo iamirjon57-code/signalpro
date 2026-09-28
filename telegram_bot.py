@@ -6,6 +6,7 @@ import logging
 
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 import config
@@ -204,7 +205,8 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Avto-savdo rejimi: *{m}*\nSumma: `{config.TRADE_AMOUNT_USDT}` USDT / savdo\n"
         f"TP `{config.TAKE_PROFIT_PCT}%` · SL `{config.STOP_LOSS_PCT}%` · "
-        f"max {config.MAX_OPEN_POSITIONS} pozitsiya{warn}",
+        f"max {config.MAX_OPEN_POSITIONS} pozitsiya\n"
+        f"Bugungi PnL: `{trader.daily_pnl():+.2f}` USDT (limit -{config.DAILY_LOSS_LIMIT_USDT:g}){warn}",
         parse_mode=ParseMode.MARKDOWN)
 
 
@@ -225,6 +227,12 @@ def build_app() -> Application:
             try:
                 await app.bot.send_message(chat_id, text, parse_mode=ParseMode.MARKDOWN,
                                            disable_web_page_preview=True)
+            except BadRequest:
+                # Markdown buzilgan bo'lsa (`_`, `*` belgilar) — oddiy matn sifatida
+                try:
+                    await app.bot.send_message(chat_id, text, disable_web_page_preview=True)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("send(%s): %s", chat_id, e)
             except Exception as e:  # noqa: BLE001
                 log.warning("send(%s): %s", chat_id, e)
 
