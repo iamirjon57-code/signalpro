@@ -19,6 +19,9 @@ SERVICE = os.getenv("SERVICE_NAME", "signalpro")
 # Sahifa orqali o'zgartirishga ruxsat etilgan kalitlar
 FIELDS = [
     ("TELEGRAM_TOKEN", "Telegram bot tokeni", True),
+    ("ADMIN_IDS", "Sizning Telegram ID ingiz (@userinfobot dan) — /balance va boshqaruv faqat sizga", False),
+    ("TELEGRAM_CHAT_IDS", "Signal yuboriladigan chat ID lar (vergul bilan, ixtiyoriy)", False),
+    ("DASHBOARD_PASSWORD", "Sayt paroli (savdolar va balansni yopish uchun)", True),
     ("TWELVE_DATA_KEY", "Twelve Data kaliti (aksiya/forex)", True),
     ("BINANCE_API_KEY", "Binance API Key", True),
     ("BINANCE_API_SECRET", "Binance API Secret", True),
@@ -111,6 +114,22 @@ def write_env(updates: dict[str, str]) -> int:
     return len(clean)
 
 
+def close_setup():
+    """SETUP_TOKEN ni .env dan o'chiradi — qayta ishga tushgach /setup sahifasi yopiladi."""
+    try:
+        with open(ENV_PATH, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return
+    lines = [ln for ln in lines if not ln.strip().startswith("SETUP_TOKEN=")]
+    tmp = ENV_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, ENV_PATH)
+    log.info("Sozlash sahifasi yopildi (SETUP_TOKEN o'chirildi)")
+
+
 def restart_service():
     """Xizmatni qayta ishga tushiradi (javob yuborilgandan keyin)."""
     subprocess.Popen(
@@ -151,8 +170,8 @@ button:disabled{opacity:.5;cursor:default}
 <h1>Signal<span>Pro</span> — sozlamalar</h1>
 <p class="sub">Kalitlarni shu yerga qo'ying. Saqlagandan so'ng bot avtomatik qayta yonadi.</p>
 
-<div class="warn">Bu sahifa faqat sozlash uchun. Ishingiz tugagach uni o'chirish tavsiya etiladi —
-serverda <code>SETUP_TOKEN</code> qatorini <code>.env</code> dan olib tashlang.</div>
+<div class="warn">Bu sahifa faqat sozlash uchun. Ishingiz tugagach pastdagi
+<b>“Sozlashni yakunlash”</b> tugmasini bosing — sahifa butunlay yopiladi.</div>
 
 <form id="f">
 <div class="card">
@@ -163,6 +182,8 @@ serverda <code>SETUP_TOKEN</code> qatorini <code>.env</code> dan olib tashlang.<
 <button type="submit" id="btn">Saqlash va qayta ishga tushirish</button>
 </form>
 <div id="msg"></div>
+<button type="button" id="close" style="margin-top:14px;background:var(--surface2);color:var(--text);border:1px solid var(--line)">
+Sozlashni yakunlash (sahifani yopish)</button>
 </div>
 <script>
 const $=s=>document.querySelector(s);
@@ -184,6 +205,10 @@ $('#f').onsubmit=async e=>{
   const values={};
   rows.forEach(f=>{const v=$('#i_'+f.key).value.trim(); if(v) values[f.key]=v;});
   const msg=$('#msg');
+  const live=(values.BINANCE_TESTNET||'').toLowerCase()==='false' && (values.AUTO_TRADE||'').toLowerCase()==='true';
+  if(live && !confirm("DIQQAT: bot REAL pul bilan avtomatik savdo qiladi. Davom etasizmi?")){
+    btn.disabled=false; btn.textContent='Saqlash va qayta ishga tushirish'; return;
+  }
   try{
     const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({token:$('#token').value,values})});
@@ -202,6 +227,17 @@ $('#f').onsubmit=async e=>{
     msg.textContent='Xato: '+err.message;
   }
   btn.disabled=false; btn.textContent='Saqlash va qayta ishga tushirish';
+};
+$('#close').onclick=async()=>{
+  if(!confirm("Sozlash sahifasi yopiladi. Keyin kalitlarni o'zgartirish uchun serverda o'rnatish buyrug'ini qayta ishga tushirish kerak bo'ladi. Yopilsinmi?")) return;
+  const msg=$('#msg'); msg.style.display='block';
+  try{
+    const r=await fetch('/api/setup/close',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:$('#token').value})});
+    const d=await r.json(); if(!r.ok) throw new Error(d.detail||'xato');
+    msg.style.background='rgba(40,192,127,.12)'; msg.style.color='#28c07f';
+    msg.textContent='Sozlash sahifasi yopildi. Bot qayta ishga tushmoqda.';
+  }catch(err){msg.style.background='rgba(242,85,90,.12)'; msg.style.color='#f2555a'; msg.textContent='Xato: '+err.message;}
 };
 load();
 </script></body></html>"""

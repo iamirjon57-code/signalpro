@@ -69,6 +69,18 @@ async def setup_save(request: Request):
     return {"updated": n}
 
 
+@app.post("/api/setup/close")
+async def setup_close(request: Request):
+    if not setup_page.enabled():
+        raise HTTPException(404)
+    body = await request.json()
+    if not setup_page.check_token(body.get("token", "")):
+        raise HTTPException(401, "Sozlash kaliti noto'g'ri")
+    setup_page.close_setup()
+    setup_page.restart_service()
+    return {"closed": True}
+
+
 @app.get("/health")
 async def health():
     return {"ok": True, "auto_trade": trader.mode(), "symbols": len(engine.symbols_to_scan())}
