@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
-from telegram import BotCommand, Update
+from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
+                      ReplyKeyboardMarkup, Update)
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
+                          ContextTypes, MessageHandler, filters)
 
 import config
 import data
@@ -37,16 +40,64 @@ HELP = """*Signal Pro* — savdo signallari boti
 /start — obuna bo'lish"""
 
 
+# ---------------- Tugmalar ----------------
+
+B_SIGNAL, B_SCAN = "📊 Signal", "🔍 Skaner"
+B_TOP, B_NEWS = "🏆 Oxirgi signallar", "📰 Yangiliklar"
+B_POS, B_TRADES = "💼 Pozitsiyalar", "📜 Savdolar"
+B_BAL, B_MODE = "💰 Balans", "⚙️ Rejim"
+B_INV, B_HELP = "🏦 Investorlar", "❓ Yordam"
+
+MENU = ReplyKeyboardMarkup(
+    [[B_SIGNAL, B_SCAN], [B_TOP, B_NEWS], [B_POS, B_TRADES], [B_BAL, B_MODE], [B_INV, B_HELP]],
+    resize_keyboard=True,
+)
+
+NEWS_TOPICS = [("₿ Kripto", "bitcoin crypto"), ("📈 Aksiyalar", "stock market"),
+               ("💱 Forex", "forex dollar"), ("🥇 Oltin", "gold price")]
+
+
+def _rows(items, per_row):
+    return [items[i:i + per_row] for i in range(0, len(items), per_row)]
+
+
+def symbol_picker() -> InlineKeyboardMarkup:
+    """Aktiv tanlash tugmalari: kripto, aksiya, forex va qo'shimcha kuzatuv."""
+    def btns(symbols):
+        return [InlineKeyboardButton(s.replace("/USDT", ""), callback_data=f"sig:{s}") for s in symbols]
+    rows = []
+    for group, per_row in ((config.CRYPTO_SYMBOLS, 5), (config.STOCK_SYMBOLS, 5),
+                           (config.FOREX_SYMBOLS, 4), (store.watchlist(), 4)):
+        rows += _rows(btns(group), per_row)
+    return InlineKeyboardMarkup(rows)
+
+
+def signal_actions(sym: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Yangilash", callback_data=f"sig:{sym}"),
+        InlineKeyboardButton("⬅️ Boshqa aktiv", callback_data="pick"),
+    ]])
+
+
 def _admin(update: Update) -> bool:
     return not config.ADMIN_IDS or str(update.effective_user.id) in config.ADMIN_IDS
+
+
+async def _only_admin(update: Update) -> bool:
+    """Admin bo'lmasa xabar beradi va False qaytaradi."""
+    if _admin(update):
+        return True
+    await update.effective_message.reply_text("🔒 Bu bo'lim faqat bot egasi uchun.")
+    return False
 
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     store.add_subscriber(update.effective_chat.id, u.username or u.first_name or "")
     await update.message.reply_text(
-        f"Assalomu alaykum, {u.first_name or ''}! Siz signallarga obuna bo'ldingiz.\n\n" + HELP,
-        parse_mode=ParseMode.MARKDOWN,
+        f"Assalomu alaykum, {u.first_name or ''}! Siz signallarga obuna bo'ldingiz.\n\n"
+        "Pastdagi tugmalardan foydalaning 👇",
+        reply_markup=MENU,
     )
 
 
@@ -56,21 +107,68 @@ async def cmd_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(HELP, parse_mode=ParseMode.MARKDOWN, reply_markup=MENU)
 
 
 async def cmd_signal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
-        await update.message.reply_text("Foydalanish: `/signal BTC/USDT`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            "Qaysi aktivni tahlil qilay? Tanlang yoki nomini yozing (masalan `DOGE/USDT`, `GOOGL`):",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=symbol_picker())
         return
     sym = ctx.args[0].upper()
     m = await update.message.reply_text(f"⏳ `{sym}` tahlil qilinmoqda...", parse_mode=ParseMode.MARKDOWN)
+    await _analyze_into(m, sym)
+
+
+async def _analyze_into(m, sym: str):
+    """Aktivni tahlil qilib, natijani berilgan xabarga yozadi (tugmalar bilan)."""
     try:
         sig = await asyncio.to_thread(signals.analyze, sym)
         store.save_signal(sig)
-        await m.edit_text(sig.text(), parse_mode=ParseMode.MARKDOWN)
+        text, kb = sig.text(), signal_actions(sym)
+        try:
+            await m.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        except BadRequest as e:
+            if "not modified" in str(e).lower():
+                return  # "Yangilash" bosildi, lekin natija o'zgarmagan
+            await m.edit_text(text, reply_markup=kb)
     except Exception as e:  # noqa: BLE001
-        await m.edit_text(f"❌ Xato: {e}")
+        await m.edit_text(f"❌ Xato: {e}", reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Boshqa aktiv", callback_data="pick")]]))
+
+
+async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Xabar ostidagi tugmalar: aktiv tanlash, yangilash, yangiliklar mavzusi."""
+    q = update.callback_query
+    d = q.data or ""
+    await q.answer()
+    if d == "pick":
+        await q.edit_message_text("Qaysi aktivni tahlil qilay?", reply_markup=symbol_picker())
+    elif d.startswith("sig:"):
+        sym = d[4:]
+        try:
+            await q.edit_message_text(f"⏳ {sym} tahlil qilinmoqda...")
+        except BadRequest:
+            pass
+        await _analyze_into(q.message, sym)
+    elif d.startswith("news:"):
+        await _send_news(q.message, d[5:])
+
+
+async def _send_news(message, query: str):
+    items = await asyncio.to_thread(investors.news, query, 6)
+    if not items:
+        await message.reply_text("Yangilik topilmadi.")
+        return
+    lines = "\n\n".join(f"• [{i['title'][:110]}]({i['link']})" for i in items)
+    try:
+        await message.reply_text(f"*{query}* bo'yicha yangiliklar:\n\n" + lines,
+                                 parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+    except BadRequest:  # sarlavhada Markdown'ni buzadigan belgi bo'lsa
+        plain = "\n\n".join(f"• {i['title'][:110]}\n{i['link']}" for i in items)
+        await message.reply_text(f"{query} bo'yicha yangiliklar:\n\n" + plain,
+                                 disable_web_page_preview=True)
 
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -98,7 +196,7 @@ async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows = store.recent_signals(15)
     rows = [r for r in rows if r["action"] != "HOLD"][:8]
     if not rows:
-        await update.message.reply_text("Hali signal yo'q. /scan buyrug'ini bering.")
+        await update.message.reply_text("Hali signal yo'q. «🔍 Skaner» tugmasini bosing.")
         return
     lines = [
         f"{'🟢' if r['action']=='BUY' else '🔴'} `{r['symbol']}` {r['action']} — "
@@ -137,15 +235,12 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = " ".join(ctx.args) if ctx.args else "stock market"
-    items = await asyncio.to_thread(investors.news, q, 6)
-    if not items:
-        await update.message.reply_text("Yangilik topilmadi.")
+    if not ctx.args:
+        kb = InlineKeyboardMarkup(_rows(
+            [InlineKeyboardButton(t, callback_data=f"news:{q}") for t, q in NEWS_TOPICS], 2))
+        await update.message.reply_text("Qaysi mavzu bo'yicha yangiliklar kerak?", reply_markup=kb)
         return
-    txt = f"*{q}* bo'yicha yangiliklar:\n\n" + "\n\n".join(
-        f"• [{i['title'][:110]}]({i['link']})" for i in items)
-    await update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN,
-                                    disable_web_page_preview=True)
+    await _send_news(update.message, " ".join(ctx.args))
 
 
 async def cmd_investors(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -162,7 +257,7 @@ async def cmd_investors(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _admin(update):
+    if not await _only_admin(update):
         return
     try:
         b = await asyncio.to_thread(trader.balance)
@@ -175,6 +270,8 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_positions(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _only_admin(update):
+        return
     pos = trader.positions()
     if not pos:
         await update.message.reply_text("Ochiq pozitsiya yo'q.")
@@ -189,6 +286,8 @@ async def cmd_positions(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_trades(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _only_admin(update):
+        return
     rows = store.recent_trades(10)
     if not rows:
         await update.message.reply_text("Savdolar yo'q.")
@@ -210,6 +309,28 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN)
 
 
+_SYMBOL_RE = re.compile(r"^[A-Za-z0-9]{2,10}(/[A-Za-z]{3,5})?$")
+
+
+async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Pastki menyu tugmalari va oddiy matn (aktiv nomi) uchun."""
+    text = (update.message.text or "").strip()
+    routes = {
+        B_SIGNAL: cmd_signal, B_SCAN: cmd_scan, B_TOP: cmd_top, B_NEWS: cmd_news,
+        B_POS: cmd_positions, B_TRADES: cmd_trades, B_BAL: cmd_balance, B_MODE: cmd_mode,
+        B_INV: cmd_investors, B_HELP: cmd_help,
+    }
+    fn = routes.get(text)
+    if fn:
+        ctx.args = []
+        await fn(update, ctx)
+    elif _SYMBOL_RE.match(text):
+        ctx.args = [text]
+        await cmd_signal(update, ctx)
+    else:
+        await update.message.reply_text("Pastdagi tugmalardan birini tanlang 👇", reply_markup=MENU)
+
+
 def build_app() -> Application:
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
     handlers = {
@@ -221,6 +342,9 @@ def build_app() -> Application:
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
 
     async def _notify(text: str):
         for chat_id in store.subscribers():
