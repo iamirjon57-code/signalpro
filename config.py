@@ -46,10 +46,24 @@ TELEGRAM_TOKEN = _env("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_IDS = [x.strip() for x in _env("TELEGRAM_CHAT_IDS", "").split(",") if x.strip()]
 ADMIN_IDS = {x.strip() for x in _env("ADMIN_IDS", "").split(",") if x.strip()}
 
+# --- Birja ---
+# binance yoki bitget. Narxlar ham, avto-savdo ham shu birjadan.
+EXCHANGE = _env("EXCHANGE", "binance").lower()
+if EXCHANGE not in ("binance", "bitget"):
+    EXCHANGE = "binance"
+BITGET_API_KEY = _env("BITGET_API_KEY", "")
+BITGET_API_SECRET = _env("BITGET_API_SECRET", "")
+BITGET_PASSPHRASE = _env("BITGET_PASSPHRASE", "")
+# Bitget sinov rejimida "qog'oz savdo" uchun boshlang'ich xayoliy balans
+PAPER_BALANCE_USDT = _f("PAPER_BALANCE_USDT", 1000.0)
+
 # --- Binance ---
 BINANCE_API_KEY = _env("BINANCE_API_KEY", "")
 BINANCE_API_SECRET = _env("BINANCE_API_SECRET", "")
-BINANCE_TESTNET = _b("BINANCE_TESTNET", "true")      # default: testnet (xavfsiz)
+# Sinov rejimi (ikkala birja uchun): true = haqiqiy pul ishlatilmaydi.
+# Binance — testnet; Bitget — qog'oz savdo (buyurtma birjaga yuborilmaydi).
+BINANCE_TESTNET = _b("BINANCE_TESTNET", "true")      # default: sinov (xavfsiz)
+TESTNET = BINANCE_TESTNET
 AUTO_TRADE = _b("AUTO_TRADE", "false")               # default: o'chiq
 TRADE_QUOTE = _env("TRADE_QUOTE", "USDT")
 TRADE_AMOUNT_USDT = _f("TRADE_AMOUNT_USDT", 15.0)    # bitta savdoga ajratiladigan summa

@@ -29,7 +29,7 @@ HELP = """*Signal Pro* — savdo signallari boti
 /list — kuzatuv ro'yxati
 /news `SYMBOL` — aktiv bo'yicha yangiliklar
 /investors — Baffet, Ekman, Dalio va b. portfeli (SEC 13F)
-/balance — Binance balansi
+/balance — birja balansi
 /positions — ochiq pozitsiyalar
 /trades — oxirgi savdolar
 /mode — avto-savdo rejimi
@@ -168,7 +168,7 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         b = await asyncio.to_thread(trader.balance)
         assets = ", ".join(f"{k}: {v:g}" for k, v in list(b["assets"].items())[:10]) or "—"
         await update.message.reply_text(
-            f"*Binance balans* ({trader.mode()})\n{b['quote']} bo'sh: `{b['free']:g}`\n{assets}",
+            f"*{config.EXCHANGE.capitalize()} balans* ({trader.mode()})\n{b['quote']} bo'sh: `{b['free']:g}`\n{assets}",
             parse_mode=ParseMode.MARKDOWN)
     except Exception as e:  # noqa: BLE001
         await update.message.reply_text(f"❌ {e}")
@@ -203,7 +203,7 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     m = trader.mode()
     warn = "\n\n⚠️ *DIQQAT: real pul bilan savdo yoqilgan!*" if m == "LIVE" else ""
     await update.message.reply_text(
-        f"Avto-savdo rejimi: *{m}*\nSumma: `{config.TRADE_AMOUNT_USDT}` USDT / savdo\n"
+        f"Birja: *{config.EXCHANGE}*\nAvto-savdo rejimi: *{m}*\nSumma: `{config.TRADE_AMOUNT_USDT}` USDT / savdo\n"
         f"TP `{config.TAKE_PROFIT_PCT}%` · SL `{config.STOP_LOSS_PCT}%` · "
         f"max {config.MAX_OPEN_POSITIONS} pozitsiya\n"
         f"Bugungi PnL: `{trader.daily_pnl():+.2f}` USDT (limit -{config.DAILY_LOSS_LIMIT_USDT:g}){warn}",
@@ -246,7 +246,7 @@ def build_app() -> Application:
             BotCommand("investors", "Yirik investorlar portfeli"),
             BotCommand("news", "Yangiliklar"),
             BotCommand("positions", "Ochiq pozitsiyalar"),
-            BotCommand("balance", "Binance balans"),
+            BotCommand("balance", "Birja balansi"),
             BotCommand("mode", "Avto-savdo rejimi"),
             BotCommand("help", "Yordam"),
         ])

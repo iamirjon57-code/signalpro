@@ -1,4 +1,4 @@
-"""Bozor ma'lumotlari: Binance (ccxt) + Twelve Data (aksiya/forex, MetaTrader o'rniga)."""
+"""Bozor ma'lumotlari: Binance/Bitget (ccxt) + Twelve Data (aksiya/forex, MetaTrader o'rniga)."""
 from __future__ import annotations
 
 import logging
@@ -54,16 +54,17 @@ def _put(key: str, df: pd.DataFrame):
     return df
 
 
-# ---------------- Binance (kripto) ----------------
+# ---------------- Kripto birja (Binance yoki Bitget) ----------------
 
-_public_ex: ccxt.binance | None = None
+_public_ex = None
 
 
-def public_exchange() -> ccxt.binance:
-    """Kalitsiz, faqat o'qish uchun Binance ulanishi."""
+def public_exchange():
+    """Kalitsiz, faqat o'qish uchun birja ulanishi (config.EXCHANGE)."""
     global _public_ex
     if _public_ex is None:
-        _public_ex = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "spot"}})
+        cls = getattr(ccxt, config.EXCHANGE)
+        _public_ex = cls({"enableRateLimit": True, "options": {"defaultType": "spot"}})
     return _public_ex
 
 

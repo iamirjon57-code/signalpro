@@ -1,8 +1,9 @@
-"""Binance avto-savdo (spot, market order) — risk cheklovlari bilan.
+"""Avto-savdo (Binance yoki Bitget, spot, market order) — risk cheklovlari bilan.
 
 Xavfsizlik qoidalari:
   * AUTO_TRADE=false bo'lsa hech qachon order qo'yilmaydi (default).
-  * BINANCE_TESTNET=true bo'lsa demo hisobda ishlaydi (default).
+  * BINANCE_TESTNET=true bo'lsa sinov rejimi (default): Binance — testnet,
+    Bitget — qog'oz savdo (haqiqiy narx, lekin buyurtma birjaga yuborilmaydi).
   * Bitta savdo hajmi TRADE_AMOUNT_USDT bilan cheklangan.
   * Ochiq pozitsiyalar soni va kunlik zarar limiti (yopilgan savdolar PnL i) tekshiriladi.
   * Sotishda qo'ldagi haqiqiy miqdor sotiladi (Binance komissiyasi hisobga olinadi).
@@ -11,15 +12,16 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 import ccxt
 
-import config, store
+import config, data, store
 
 log = logging.getLogger("trader")
 
-_ex: ccxt.binance | None = None
+_ex = None
 _positions: dict[str, dict] = {}   # symbol -> {amount, entry, tp, sl, ts}
 _loaded = False
 _lock = threading.RLock()   # skaner va TP/SL tsikli bir vaqtda order bermasin
@@ -33,27 +35,130 @@ class NoPosition(TradeError):
     """SELL signali keldi, lekin ochiq pozitsiya yo'q — xato emas, jimgina o'tkaziladi."""
 
 
-def exchange() -> ccxt.binance:
+class PaperExchange:
+    """Qog'oz savdo: haqiqiy narxlar, lekin buyurtma birjaga yuborilmaydi.
+
+    Bitget'da spot uchun test birjasi yo'q, shuning uchun sinov rejimida shu ishlatiladi.
+    Balans: boshlang'ich summa + yopilgan savdolar PnL i - ochiq pozitsiyalar qiymati.
+    """
+    FEE = 0.001  # 0.1% — Bitget spot komissiyasiga yaqin
+
+    def __init__(self):
+        self.pub = data.public_exchange()
+        self.pub.load_markets()
+        self.options = {"createMarketBuyOrderRequiresPrice": True}
+        self.has = {"createMarketBuyOrderWithCost": True}
+        self._n = 0
+
+    def market(self, symbol):
+        return self.pub.market(symbol)
+
+    def amount_to_precision(self, symbol, amount):
+        return self.pub.amount_to_precision(symbol, amount)
+
+    def _price(self, symbol) -> float:
+        return float(self.pub.fetch_ticker(symbol)["last"])
+
+    def fetch_balance(self):
+        pos = store.load_positions()
+        spent = sum(float(p.get("cost") or p["entry"] * p["amount"]) for p in pos.values())
+        usdt = config.PAPER_BALANCE_USDT + store.realized_pnl_since("0000") - spent
+        free = {config.TRADE_QUOTE: usdt}
+        for sym, p in pos.items():
+            free[sym.split("/")[0]] = float(p["amount"])
+        return {"free": dict(free), "total": dict(free)}
+
+    def _order(self, symbol, side, amount, price):
+        self._n += 1
+        base = symbol.split("/")[0]
+        cost = amount * price
+        fee = ({"currency": base, "cost": amount * self.FEE} if side == "buy"
+               else {"currency": config.TRADE_QUOTE, "cost": cost * self.FEE})
+        return {"id": f"paper-{int(time.time())}-{self._n}", "status": "closed",
+                "filled": amount, "average": price, "cost": cost, "fee": fee}
+
+    def create_market_buy_order_with_cost(self, symbol, cost):
+        price = self._price(symbol)
+        amount = float(self.amount_to_precision(symbol, cost / price))
+        return self._order(symbol, "buy", amount, price)
+
+    def create_order(self, symbol, type_, side, amount):
+        return self._order(symbol, side, float(amount), self._price(symbol))
+
+
+def is_paper() -> bool:
+    return config.EXCHANGE == "bitget" and config.TESTNET
+
+
+def exchange():
     global _ex
-    if _ex is None:
+    if _ex is not None:
+        return _ex
+    if is_paper():
+        _ex = PaperExchange()
+        return _ex
+    if config.EXCHANGE == "bitget":
+        if not (config.BITGET_API_KEY and config.BITGET_API_SECRET and config.BITGET_PASSPHRASE):
+            raise TradeError("BITGET_API_KEY / BITGET_API_SECRET / BITGET_PASSPHRASE o'rnatilmagan")
+        ex = ccxt.bitget({
+            "apiKey": config.BITGET_API_KEY,
+            "secret": config.BITGET_API_SECRET,
+            "password": config.BITGET_PASSPHRASE,
+            "enableRateLimit": True,
+            "options": {"defaultType": "spot"},
+        })
+    else:
         if not (config.BINANCE_API_KEY and config.BINANCE_API_SECRET):
             raise TradeError("BINANCE_API_KEY / BINANCE_API_SECRET o'rnatilmagan")
-        _ex = ccxt.binance({
+        ex = ccxt.binance({
             "apiKey": config.BINANCE_API_KEY,
             "secret": config.BINANCE_API_SECRET,
             "enableRateLimit": True,
             "options": {"defaultType": "spot"},
         })
-        if config.BINANCE_TESTNET:
-            _ex.set_sandbox_mode(True)
-        _ex.load_markets()
+        if config.TESTNET:
+            ex.set_sandbox_mode(True)
+    ex.load_markets()
+    _ex = ex
     return _ex
 
 
 def mode() -> str:
     if not config.AUTO_TRADE:
         return "off"
-    return "testnet" if config.BINANCE_TESTNET else "LIVE"
+    if is_paper():
+        return "paper"
+    return "testnet" if config.TESTNET else "LIVE"
+
+
+def _settle(ex, order: dict, symbol: str) -> dict:
+    """Ba'zi birjalar (Bitget) market buyurtmaga faqat ID qaytaradi — to'liq natijani so'rab olamiz."""
+    if order.get("average") and order.get("filled"):
+        return order
+    oid = order.get("id")
+    if not oid or not hasattr(ex, "fetch_order"):
+        return order
+    for _ in range(6):
+        time.sleep(0.7)
+        try:
+            o = ex.fetch_order(oid, symbol)
+        except Exception as e:  # noqa: BLE001
+            log.warning("fetch_order(%s): %s", oid, e)
+            continue
+        if o.get("filled") and o.get("average"):
+            return o
+    return order
+
+
+def _market_buy(ex, symbol: str, usdt: float, price: float) -> dict:
+    """USDT summasiga market xarid. Bitget'da summa (cost) bilan, Binance'da miqdor bilan."""
+    opts, has = getattr(ex, "options", None) or {}, getattr(ex, "has", None) or {}
+    if opts.get("createMarketBuyOrderRequiresPrice") and has.get("createMarketBuyOrderWithCost"):
+        order = ex.create_market_buy_order_with_cost(symbol, usdt)
+    else:
+        amount = float(ex.amount_to_precision(symbol, usdt / price))
+        order = ex.create_order(symbol, "market", "buy", amount)
+    return _settle(ex, order, symbol)
 
 
 def balance(quote: str | None = None) -> dict:
@@ -61,8 +166,8 @@ def balance(quote: str | None = None) -> dict:
     b = exchange().fetch_balance()
     return {
         "quote": quote,
-        "free": float(b["free"].get(quote, 0)),
-        "total": float(b["total"].get(quote, 0)),
+        "free": float(b["free"].get(quote, 0) or 0),
+        "total": float(b["total"].get(quote, 0) or 0),
         "assets": {k: v for k, v in b["total"].items() if v and float(v) > 0},
     }
 
@@ -94,7 +199,7 @@ def daily_pnl() -> float:
 
 
 def _min_cost(symbol: str) -> float:
-    """Binance'ning shu juftlik uchun minimal buyurtma qiymati (USDT)."""
+    """Birjaning shu juftlik uchun minimal buyurtma qiymati (USDT)."""
     try:
         m = exchange().market(symbol)
         return float((m.get("limits", {}).get("cost", {}) or {}).get("min") or 0) or 5.0
@@ -130,9 +235,14 @@ def _filled_base(order: dict, symbol: str, fallback: float) -> float:
     """Xariddan keyin qo'lga tushgan sof miqdor (komissiya base aktivdan olingan bo'lsa ayiriladi)."""
     filled = float(order.get("filled") or fallback)
     base = symbol.split("/")[0]
-    fees = order.get("fees") or ([order["fee"]] if order.get("fee") else [])
+    fees = [f for f in (order.get("fees") or ([order["fee"]] if order.get("fee") else []))
+            if f and f.get("cost")]
+    if not fees:
+        # Komissiya haqida ma'lumot kelmadi — ehtiyot uchun 0.1% ayiramiz,
+        # aks holda sotishda hisobdagi boshqa tangalarga tegib ketishi mumkin.
+        return max(filled * 0.999, 0.0)
     for f in fees:
-        if f and f.get("currency") == base and f.get("cost"):
+        if f.get("currency") == base:
             filled -= float(f["cost"])
     return max(filled, 0.0)
 
@@ -157,9 +267,13 @@ def _sellable(ex, symbol: str, want: float) -> float:
 def _close(symbol: str, pos: dict, price: float, note: str) -> dict:
     ex = exchange()
     amount = _sellable(ex, symbol, float(pos["amount"]))
-    order = ex.create_order(symbol, "market", "sell", amount)
+    order = _settle(ex, ex.create_order(symbol, "market", "sell", amount), symbol)
     fill = float(order.get("average") or price)
     proceeds = float(order.get("cost") or fill * amount)
+    # Sotishdagi komissiya USDT'dan olinadi — sof tushumni hisoblaymiz
+    for f in (order.get("fees") or ([order["fee"]] if order.get("fee") else [])):
+        if f and f.get("currency") == config.TRADE_QUOTE and f.get("cost"):
+            proceeds -= float(f["cost"])
     spent = float(pos.get("cost") or pos["entry"] * pos["amount"])
     pnl = proceeds - spent
     store.save_trade(
@@ -189,11 +303,10 @@ def execute(signal) -> dict:
                           f"SELL signal, score={signal.score}")
 
         ex = exchange()
-        amount = float(ex.amount_to_precision(symbol, config.TRADE_AMOUNT_USDT / signal.price))
-        order = ex.create_order(symbol, "market", "buy", amount)
+        order = _market_buy(ex, symbol, config.TRADE_AMOUNT_USDT, signal.price)
         entry = float(order.get("average") or signal.price)
-        cost = float(order.get("cost") or entry * amount)
-        held = _filled_base(order, symbol, amount)
+        cost = float(order.get("cost") or config.TRADE_AMOUNT_USDT)
+        held = _filled_base(order, symbol, cost / entry)
         pos = {
             "amount": held, "entry": entry, "cost": cost,
             # TP/SL haqiqiy kirish narxidan hisoblanadi
