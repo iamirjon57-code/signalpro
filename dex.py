@@ -149,6 +149,14 @@ def summarize(p: dict) -> dict:
 
 # ---------------- Firibgarlik filtri ----------------
 
+THIN_LIQ = "Likvidlik qiymatga nisbatan juda kam"
+
+
+def _only_thin(bad: list[str]) -> bool:
+    """Yagona xavf — likvidlik/qiymat nisbati (yirik, birjalarda sotiladigan tangalarda oddiy hol)."""
+    return bool(bad) and all(b.startswith(THIN_LIQ) for b in bad)
+
+
 def market_check(t: dict) -> tuple[list[str], list[str]]:
     """Bozor ko'rsatkichlari bo'yicha (xavfli, ogohlantirish) ro'yxatlari."""
     bad, warn = [], []
@@ -169,11 +177,10 @@ def market_check(t: dict) -> tuple[list[str], list[str]]:
         bad.append(f"Deyarli hech kim sotmayapti ({t['sells24']} sotuv / {t['buys24']} xarid) — honeypot belgisi")
     if t["chg24"] <= -50:
         bad.append(f"Narx 24 soatda {t['chg24']:.0f}% tushgan")
-    # Yirik tangalar asosan yirik birjalarda sotiladi — ularga bu qoida qo'llanmaydi
     if t["fdv"] > 0 and t["liq"] < 1_000_000:
         ratio = t["liq"] / t["fdv"]
         if ratio < 0.01:
-            bad.append(f"Likvidlik qiymatga nisbatan juda kam ({ratio * 100:.1f}%)")
+            bad.append(f"{THIN_LIQ} ({ratio * 100:.1f}%)")
         elif ratio < 0.03:
             warn.append(f"Likvidlik qiymatga nisbatan kam ({ratio * 100:.1f}%)")
     if t["chg24"] >= 500:
@@ -396,9 +403,12 @@ def evaluate(pair: dict, deep: bool = True) -> dict:
     if deep and sec["ok"] is None:
         warn = warn + ["Kontraktni tekshirib bo'lmadi"]
     cg = ""
-    if deep and not bad:      # xavfli tanga uchun qo'shimcha so'rov yubormaymiz
+    if deep and (not bad or _only_thin(bad)):   # boshqa xavfli tangalar uchun qo'shimcha so'rov yo'q
         x = cross_check(t)
         warn, cg = warn + x["warn"], x["coingecko"]
+        if cg and _only_thin(bad):
+            # CoinGecko ro'yxatidagi yirik tanga: asosiy savdosi yirik birjalarda, DEX hovuzi kichik bo'lishi tabiiy
+            bad, warn = [], warn + ["DEX'dagi likvidligi qiymatiga nisbatan kam (asosiy savdosi yirik birjalarda)"]
     score = max(0, 100 - 30 * len(bad) - 10 * len(warn))
     if cg:
         score = min(100, score + 5)   # CoinGecko ro'yxatida bo'lishi — ijobiy belgi
@@ -667,7 +677,7 @@ def scan_trending() -> list[dict]:
         if not bp:
             continue
         t = evaluate(bp, deep=False)
-        if t["bad"]:
+        if t["bad"] and not _only_thin(t["bad"]):
             out.append(t)
             continue
         out.append(evaluate(bp, deep=True))
