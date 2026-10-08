@@ -176,9 +176,19 @@ def market_check(t: dict) -> tuple[list[str], list[str]]:
         elif ratio < 0.03:
             warn.append(f"Likvidlik qiymatga nisbatan kam ({ratio * 100:.1f}%)")
     if t["chg24"] >= 500:
-        warn.append(f"24 soatda +{t['chg24']:.0f}% — pump bo'lishi mumkin")
-    if t["liq"] > 0 and t["vol24"] / t["liq"] > 30:
-        warn.append("Hajm likvidlikdan 30 baravar ko'p — sun'iy savdo bo'lishi mumkin")
+        bad.append(f"24 soatda +{t['chg24']:.0f}% — pump, tushish xavfi juda yuqori")
+    elif t["chg24"] >= 100:
+        warn.append(f"24 soatda +{t['chg24']:.0f}% — keskin o'sgan, qaytishi mumkin")
+    if t["liq"] > 0:
+        turnover = t["vol24"] / t["liq"]
+        if turnover > 40:
+            bad.append(f"Hajm likvidlikdan {turnover:.0f} baravar ko'p — sun'iy savdo belgisi")
+        elif turnover > 10:
+            warn.append(f"Hajm likvidlikdan {turnover:.0f} baravar ko'p — juda qizigan")
+    if t["age_h"] is not None and config.DEX_MIN_AGE_H <= t["age_h"] < 72:
+        warn.append(f"3 kundan yosh ({t['age_h']:.0f} soat) — hali sinalmagan")
+    if config.DEX_MIN_LIQUIDITY <= t["liq"] < 100000:
+        warn.append(f"Likvidlik o'rtacha: {_money(t['liq'])} — katta sotuvda narx keskin tushadi")
     if not t["socials"]:
         warn.append("Sayti va ijtimoiy tarmoqlari yo'q")
     if t["quote"] and t["quote"] not in MAJOR_QUOTES:
@@ -274,7 +284,7 @@ def evaluate(pair: dict, deep: bool = True) -> dict:
         bad, warn = bad + sec["bad"], warn + sec["warn"]
     if deep and sec["ok"] is None:
         warn = warn + ["Kontraktni tekshirib bo'lmadi"]
-    score = max(0, 100 - 30 * len(bad) - 8 * len(warn))
+    score = max(0, 100 - 30 * len(bad) - 10 * len(warn))
     if bad:
         score = min(score, 30)   # bitta jiddiy xavf bo'lsa ham baho past ko'rinsin
     verdict = "bad" if bad else ("ok" if (sec["ok"] is True and score >= config.DEX_MIN_SCORE) else "warn")
