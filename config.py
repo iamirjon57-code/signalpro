@@ -95,3 +95,22 @@ SEC_USER_AGENT = _env("SEC_USER_AGENT", "SignalPro/1.0 (contact@example.com)")
 PORT = int(_f("PORT", 8000))
 DASHBOARD_PASSWORD = _env("DASHBOARD_PASSWORD", "")  # bo'sh = ochiq
 DB_PATH = _env("DB_PATH", "signals.db")
+
+# --- DEX (DexScreener) ---
+# Trenddagi tangalar haqida Telegram xabarlari (faqat firibgarlik filtridan o'tganlari)
+DEX_ALERTS = _b("DEX_ALERTS", "true")
+# Qog'oz avto-savdo: haqiqiy narxlar, lekin pul ishlatilmaydi
+DEX_AUTO_TRADE = _b("DEX_AUTO_TRADE", "false")
+DEX_CHAINS = [x.lower() for x in _list("DEX_CHAINS", "solana,ethereum,bsc,base")]
+DEX_MIN_LIQUIDITY = _f("DEX_MIN_LIQUIDITY", 30000)   # USD
+DEX_MIN_VOLUME = _f("DEX_MIN_VOLUME", 50000)         # USD / 24 soat
+DEX_MIN_AGE_H = _f("DEX_MIN_AGE_H", 24)              # juftlik yoshi, soat
+DEX_MIN_SCORE = _f("DEX_MIN_SCORE", 75)              # xavfsizlik bahosi (0-100)
+DEX_TRADE_USDT = _f("DEX_TRADE_USDT", 10)
+DEX_MAX_POSITIONS = int(_f("DEX_MAX_POSITIONS", 3))
+DEX_TP_PCT = _f("DEX_TP_PCT", 30)
+DEX_SL_PCT = _f("DEX_SL_PCT", 15)
+DEX_MAX_HOLD_H = _f("DEX_MAX_HOLD_H", 48)
+DEX_DAILY_LOSS_LIMIT = _f("DEX_DAILY_LOSS_LIMIT", 30)
+DEX_PAPER_BALANCE = _f("DEX_PAPER_BALANCE", 1000)
+DEX_SCAN_INTERVAL_SEC = int(_f("DEX_SCAN_INTERVAL_SEC", 300))

@@ -94,6 +94,7 @@ button:disabled{opacity:.5;cursor:default}
     <div class="tab" data-t="investors">Yirik investorlar</div>
     <div class="tab" data-t="news">Yangiliklar</div>
     <div class="tab" data-t="trades">Savdolar</div>
+    <div class="tab" data-t="dex">DEX tangalar</div>
   </div>
 
   <section id="v-signals">
@@ -143,6 +144,28 @@ button:disabled{opacity:.5;cursor:default}
     <div class="panel"><h3>Savdolar tarixi</h3><div id="trWrap" class="muted">—</div></div>
   </section>
 
+  <section id="v-dex" class="hide">
+    <div class="panel">
+      <h3>Tangani tekshirish (DexScreener)</h3>
+      <div class="row" style="margin-bottom:12px">
+        <input id="dxIn" placeholder="Tanga nomi yoki kontrakt manzili" style="flex:1;min-width:180px">
+        <button class="primary" id="dxBtn">Tekshirish</button>
+      </div>
+      <div id="dxRes" class="muted">Har bir tanga firibgarlik filtridan o'tkaziladi. Filtr kafolat emas.</div>
+    </div>
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <h3 style="margin:0">Trenddagi tangalar</h3>
+        <button id="dxRef">Yangilash</button>
+      </div>
+      <p class="muted" id="dxInfo">—</p>
+      <div id="dxTrend" class="muted">Yuklanmoqda…</div>
+    </div>
+    <div class="panel"><h3>DEX qog'oz savdo</h3><div id="dxStats" class="muted">—</div>
+      <div id="dxPos" class="muted" style="margin-top:10px"></div>
+      <div id="dxTr" class="muted" style="margin-top:10px"></div></div>
+  </section>
+
   <p class="muted" style="margin:24px 0;text-align:center">
     Signallar faqat axborot maqsadida. Bu moliyaviy maslahat emas — savdo riski o'zingizda.
   </p>
@@ -162,10 +185,11 @@ const fmt = n => n == null ? '—' : (Math.abs(n) >= 1000 ? n.toLocaleString('en
 
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
-  ['signals','chart','investors','news','trades'].forEach(v =>
+  ['signals','chart','investors','news','trades','dex'].forEach(v =>
     $('#v-' + v).classList.toggle('hide', v !== t.dataset.t));
   if (t.dataset.t === 'investors') loadFunds();
   if (t.dataset.t === 'trades') loadTrades();
+  if (t.dataset.t === 'dex') { loadDex(false); loadDexTrades(); }
 });
 
 async function loadConfig(){
@@ -289,6 +313,65 @@ async function loadTrades(){
        <td class="muted">${t.mode}</td></tr>`).join('') + '</tbody></table>' : 'Savdolar yo\'q.';
   } catch(e){ $('#posWrap').textContent = 'Xato: ' + e.message; }
 }
+
+// ---------- DEX ----------
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = x => x >= 1e9 ? '$' + (x/1e9).toFixed(2) + 'B' : x >= 1e6 ? '$' + (x/1e6).toFixed(2) + 'M'
+  : x >= 1e3 ? '$' + (x/1e3).toFixed(1) + 'K' : '$' + Math.round(x || 0);
+const VERD = {ok:['BUY','✅ O\'tdi'], warn:['HOLD','⚠️ Ehtiyot'], bad:['SELL','⛔ Xavfli']};
+const safeUrl = u => /^https:\/\/dexscreener\.com\//.test(u || '') ? u : '#';
+function dexRows(items){
+  return `<table><thead><tr><th>Tanga</th><th>Tarmoq</th><th>Holat</th><th>Baho</th><th>Narx</th>
+    <th>24s</th><th>Likvidlik</th><th>Hajm 24s</th><th>Yoshi</th></tr></thead><tbody>` +
+    items.map(t => `<tr title="${esc([...t.bad, ...t.warn].join(' · '))}">
+      <td class="sym"><a href="${safeUrl(t.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(t.symbol)}</a></td>
+      <td class="muted">${esc(t.chain)}</td>
+      <td><span class="pill ${VERD[t.verdict][0]}">${VERD[t.verdict][1]}</span></td>
+      <td>${t.score}</td><td>${fmt(t.price)}</td>
+      <td style="color:var(--${t.chg24 >= 0 ? 'buy' : 'sell'})">${t.chg24 >= 0 ? '+' : ''}${t.chg24.toFixed(0)}%</td>
+      <td>${money(t.liq)}</td><td>${money(t.vol24)}</td>
+      <td class="muted">${t.age_h == null ? '—' : t.age_h < 48 ? t.age_h.toFixed(0) + ' soat' : (t.age_h/24).toFixed(0) + ' kun'}</td>
+    </tr>`).join('') + '</tbody></table>';
+}
+async function loadDex(refresh){
+  $('#dxTrend').textContent = 'Filtrdan o\'tkazilmoqda…';
+  try {
+    const d = await api('/api/dex/trending' + (refresh ? '?refresh=true' : ''));
+    const ok = d.items.filter(t => t.verdict === 'ok').length, bad = d.items.filter(t => t.verdict === 'bad').length;
+    $('#dxInfo').textContent = `${d.items.length} ta tanga · ${ok} ta filtrdan o'tdi · ${bad} ta xavfli · avto-savdo: ${d.mode}` +
+      ` · filtr: likvidlik ≥ ${money(d.filters.min_liquidity)}, hajm ≥ ${money(d.filters.min_volume)}, yoshi ≥ ${d.filters.min_age_h} soat`;
+    $('#dxTrend').innerHTML = d.items.length ? dexRows(d.items) : 'Hozircha ma\'lumot yo\'q.';
+  } catch(e){ $('#dxTrend').textContent = 'Xato: ' + e.message; }
+}
+async function dexCheck(){
+  const q = $('#dxIn').value.trim(); if (!q) return;
+  $('#dxRes').textContent = 'Tekshirilmoqda…';
+  try {
+    const d = await api('/api/dex/check?q=' + encodeURIComponent(q));
+    if (!d.items.length){ $('#dxRes').textContent = 'Topilmadi.'; return; }
+    const t = d.items[0];
+    $('#dxRes').innerHTML = dexRows(d.items) + `<ul class="muted" style="margin:10px 0 0;padding-left:18px">` +
+      [...t.bad.map(b => '⛔ ' + b), ...t.warn.map(w => '⚠️ ' + w)].map(x => `<li>${esc(x)}</li>`).join('') +
+      `</ul><p class="muted">Ogohlantirishlar birinchi qatordagi tangaga tegishli. Bir xil nomli soxta nusxalar ko'p bo'ladi — manzilni tekshiring.</p>`;
+  } catch(e){ $('#dxRes').textContent = 'Xato: ' + e.message; }
+}
+async function loadDexTrades(){
+  try {
+    const d = await api('/api/dex/trades'), s = d.stats;
+    $('#dxStats').textContent = `Rejim: ${s.mode} · Balans: $${s.balance} · Jami PnL: ${s.pnl >= 0 ? '+' : ''}${s.pnl}$ · ` +
+      `Yopilgan: ${s.closed} ta (${s.wins} tasi foydali)`;
+    $('#dxPos').innerHTML = d.positions.length ? '<b>Ochiq pozitsiyalar</b><table><thead><tr><th>Tanga</th><th>Summa</th><th>Kirish</th><th>TP</th><th>SL</th></tr></thead><tbody>' +
+      d.positions.map(p => `<tr><td class="sym">${esc(p.symbol)} <span class="muted">${esc(p.chain)}</span></td><td>$${fmt(p.cost)}</td>
+        <td>${fmt(p.entry)}</td><td>${fmt(p.tp)}</td><td>${fmt(p.sl)}</td></tr>`).join('') + '</tbody></table>' : 'Ochiq pozitsiya yo\'q.';
+    $('#dxTr').innerHTML = d.trades.length ? '<b>Savdolar</b><table><thead><tr><th>Vaqt</th><th>Tanga</th><th>Yo\'nalish</th><th>Narx</th><th>PnL</th><th>Sabab</th></tr></thead><tbody>' +
+      d.trades.map(t => `<tr><td class="muted">${(t.created_at||'').slice(0,16).replace('T',' ')}</td><td class="sym">${esc(t.symbol)}</td>
+        <td><span class="pill ${t.side==='buy'?'BUY':'SELL'}">${t.side.toUpperCase()}</span></td><td>${fmt(t.price)}</td>
+        <td>${t.pnl == null ? '—' : (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) + '$'}</td><td class="muted">${esc(t.note)}</td></tr>`).join('') + '</tbody></table>' : '';
+  } catch(e){ $('#dxStats').textContent = 'Savdolarni ko\'rish uchun parol kerak (' + e.message + ')'; }
+}
+$('#dxBtn').onclick = dexCheck;
+$('#dxIn').addEventListener('keydown', e => e.key === 'Enter' && dexCheck());
+$('#dxRef').onclick = () => loadDex(true);
 
 loadConfig(); loadStats(); loadSignals();
 setInterval(() => { loadSignals(); loadStats(); }, 60000);

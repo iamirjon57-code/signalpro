@@ -16,6 +16,7 @@ import signals
 import store
 import trader
 import setup_page
+import dex
 from indicators import enrich
 
 log = logging.getLogger("web")
@@ -168,3 +169,34 @@ async def api_balance(request: Request):
 @app.get("/api/stats")
 async def api_stats():
     return store.stats()
+
+
+# ---------- DEX (DexScreener) ----------
+
+@app.get("/api/dex/trending")
+async def api_dex_trending(refresh: bool = False):
+    if refresh or not dex.last_scan:
+        try:
+            await asyncio.to_thread(dex.scan_trending)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"DexScreener: {e}")
+    return {"at": dex.last_scan_at, "items": dex.last_scan[:60], "mode": dex.mode(),
+            "filters": {"min_liquidity": config.DEX_MIN_LIQUIDITY, "min_volume": config.DEX_MIN_VOLUME,
+                        "min_age_h": config.DEX_MIN_AGE_H, "min_score": config.DEX_MIN_SCORE,
+                        "chains": config.DEX_CHAINS}}
+
+
+@app.get("/api/dex/check")
+async def api_dex_check(q: str = Query(...)):
+    try:
+        pairs = await asyncio.to_thread(dex.lookup, q)
+        items = await asyncio.to_thread(lambda: [dex.evaluate(p) for p in pairs[:5]])
+        return {"items": items}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/dex/trades")
+async def api_dex_trades(request: Request, limit: int = 50):
+    _auth(request)
+    return {"positions": dex.positions(), "trades": dex.trades(limit), "stats": dex.stats()}

@@ -14,6 +14,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 
 import config
 import data
+import dex
 import engine
 import investors
 import signals
@@ -36,6 +37,7 @@ HELP = """*Signal Pro* — savdo signallari boti
 /positions — ochiq pozitsiyalar
 /trades — oxirgi savdolar
 /mode — avto-savdo rejimi
+/dex `NOM yoki MANZIL` — DexScreener'dan tangani tekshirish (firibgarlik filtri bilan)
 /stop — signallarni to'xtatish
 /start — obuna bo'lish"""
 
@@ -47,9 +49,11 @@ B_TOP, B_NEWS = "🏆 Oxirgi signallar", "📰 Yangiliklar"
 B_POS, B_TRADES = "💼 Pozitsiyalar", "📜 Savdolar"
 B_BAL, B_MODE = "💰 Balans", "⚙️ Rejim"
 B_INV, B_HELP = "🏦 Investorlar", "❓ Yordam"
+B_DEX = "🦎 DEX tangalar"
 
 MENU = ReplyKeyboardMarkup(
-    [[B_SIGNAL, B_SCAN], [B_TOP, B_NEWS], [B_POS, B_TRADES], [B_BAL, B_MODE], [B_INV, B_HELP]],
+    [[B_SIGNAL, B_SCAN], [B_TOP, B_NEWS], [B_POS, B_TRADES], [B_BAL, B_MODE],
+     [B_DEX, B_INV], [B_HELP]],
     resize_keyboard=True,
 )
 
@@ -154,6 +158,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _analyze_into(q.message, sym)
     elif d.startswith("news:"):
         await _send_news(q.message, d[5:])
+    elif d.startswith("dx:"):
+        _, chain, address = d.split(":", 2)
+        await _dex_token(q.message, chain, address, edit=True)
+    elif d == "dex:trend":
+        await _dex_trend(q.message)
+    elif d in ("dex:pos", "dex:trades", "dex:cfg"):
+        if not await _only_admin(update):
+            return
+        await {"dex:pos": _dex_positions, "dex:trades": _dex_trades, "dex:cfg": _dex_config}[d](q.message)
 
 
 async def _send_news(message, query: str):
@@ -309,6 +322,158 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN)
 
 
+# ---------------- DEX (DexScreener) ----------------
+
+async def _say(message, text: str, kb=None, edit: bool = False):
+    """Markdown bilan yuboradi; belgilar buzsa — oddiy matn."""
+    send = message.edit_text if edit else message.reply_text
+    try:
+        await send(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb, disable_web_page_preview=True)
+    except BadRequest as e:
+        if "not modified" in str(e).lower():
+            return
+        await send(text.replace("*", "").replace("`", ""), reply_markup=kb, disable_web_page_preview=True)
+
+
+def _dex_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔥 Trenddagi tangalar", callback_data="dex:trend")],
+        [InlineKeyboardButton("💼 DEX pozitsiyalar", callback_data="dex:pos"),
+         InlineKeyboardButton("📜 DEX savdolar", callback_data="dex:trades")],
+        [InlineKeyboardButton("⚙️ Filtr va rejim", callback_data="dex:cfg")],
+    ])
+
+
+def _dx_button(t: dict, label: str) -> InlineKeyboardButton | None:
+    data_ = f"dx:{t['chain']}:{t['address']}"
+    return InlineKeyboardButton(label, callback_data=data_) if len(data_.encode()) <= 64 else None
+
+
+async def cmd_dex(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not ctx.args:
+        await _say(msg, "*DEX tangalar* (DexScreener)\n\n"
+                        "Tangani tekshirish uchun nomini yoki kontrakt manzilini yozing, masalan:\n"
+                        "`/dex PEPE` yoki manzilni shunchaki yuboring.\n\n"
+                        "Har bir tanga firibgarlik filtridan o'tkaziladi. Filtr kafolat emas.",
+                   _dex_menu())
+        return
+    q = " ".join(ctx.args)
+    m = await msg.reply_text("⏳ DexScreener'dan qidirilmoqda...")
+    try:
+        pairs = await asyncio.to_thread(dex.lookup, q)
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ DexScreener xatosi: {e}")
+        return
+    if not pairs:
+        await m.edit_text("Hech narsa topilmadi. Nomni yoki manzilni tekshirib ko'ring.")
+        return
+    if dex.is_address(q) or len(pairs) == 1:
+        t = await asyncio.to_thread(dex.evaluate, pairs[0])
+        await _dex_show(m, t, edit=True)
+        return
+    # Bir xil nomli tangalar ko'p bo'ladi (soxta nusxalar) — foydalanuvchi o'zi tanlaydi
+    rows = []
+    for p in pairs[:6]:
+        t = dex.summarize(p)
+        b = _dx_button(t, f"{t['symbol']} · {t['chain']} · likv. {dex._money(t['liq'])}")
+        if b:
+            rows.append([b])
+    await _say(m, f"*{len(pairs)} ta tanga topildi.* Bir xil nomli soxta nusxalar ko'p bo'ladi — "
+                  "likvidligi eng kattasi odatda asl tanga. Tanlang:",
+               InlineKeyboardMarkup(rows), edit=True)
+
+
+async def _dex_show(message, t: dict, edit: bool = False):
+    row = [InlineKeyboardButton("📈 DexScreener", url=t["url"])] if t.get("url") else []
+    b = _dx_button(t, "🔄 Yangilash")
+    if b:
+        row.insert(0, b)
+    await _say(message, dex.report(t), InlineKeyboardMarkup([row]) if row else None, edit=edit)
+
+
+async def _dex_token(message, chain: str, address: str, edit: bool = False):
+    try:
+        t = await asyncio.to_thread(dex.check_token, chain, address)
+    except Exception as e:  # noqa: BLE001
+        await message.reply_text(f"❌ DexScreener xatosi: {e}")
+        return
+    if not t:
+        await message.reply_text("Bu tanga bo'yicha ma'lumot topilmadi.")
+        return
+    await _dex_show(message, t, edit=edit)
+
+
+async def _dex_trend(message):
+    m = await message.reply_text("⏳ Trenddagi tangalar filtrdan o'tkazilmoqda (bir daqiqagacha)...")
+    try:
+        found = await asyncio.to_thread(dex.scan_trending)
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ DexScreener xatosi: {e}")
+        return
+    ok = [t for t in found if t["verdict"] == "ok"]
+    warn = [t for t in found if t["verdict"] == "warn"]
+    bad = len(found) - len(ok) - len(warn)
+    lines = [f"*DEX trend*: {len(found)} ta tanga tekshirildi",
+             f"✅ {len(ok)} ta filtrdan o'tdi · ⚠️ {len(warn)} ta shubhali · ⛔ {bad} ta xavfli (ko'rsatilmaydi)", ""]
+    rows = []
+    for t in (ok + warn)[:8]:
+        icon = "✅" if t["verdict"] == "ok" else "⚠️"
+        lines.append(f"{icon} *{t['symbol']}* ({t['chain']}) — 24s {t['chg24']:+.0f}%, "
+                     f"likv. {dex._money(t['liq'])}, baho {t['score']}")
+        b = _dx_button(t, f"{icon} {t['symbol']} ({t['chain']})")
+        if b:
+            rows.append(b)
+    if not ok and not warn:
+        lines.append("Hozir filtrdan o'tgan tanga yo'q. Bu normal — trenddagi tangalarning ko'pi xavfli.")
+    await _say(m, "\n".join(lines), InlineKeyboardMarkup(_rows(rows, 2)) if rows else None, edit=True)
+
+
+async def _dex_positions(message):
+    pos = dex.positions()
+    st = dex.stats()
+    head = (f"*DEX qog'oz savdo* ({st['mode']})\nBalans: `${st['balance']:.2f}` · "
+            f"Jami PnL: `{st['pnl']:+.2f}$` · Bugun: `{st['pnl_today']:+.2f}$`\n"
+            f"Yopilgan: {st['closed']} ta ({st['wins']} tasi foydali)\n")
+    if not pos:
+        await _say(message, head + "\nOchiq pozitsiya yo'q.")
+        return
+    lines = []
+    for p in pos:
+        lines.append(f"`{p['symbol']}` ({p['chain']}) ${p['cost']:g} @ {p['entry']:.8g} · "
+                     f"TP {p['tp']:.8g} · SL {p['sl']:.8g}")
+    await _say(message, head + "\n*Ochiq pozitsiyalar*\n" + "\n".join(lines))
+
+
+async def _dex_trades(message):
+    rows = dex.trades(12)
+    if not rows:
+        await message.reply_text("DEX savdolari hali yo'q.")
+        return
+    lines = []
+    for t in rows:
+        if t["side"] == "buy":
+            lines.append(f"🟢 `{t['symbol']}` xarid ${t['cost']:g}")
+        else:
+            lines.append(f"{'✅' if (t['pnl'] or 0) >= 0 else '🔴'} `{t['symbol']}` sotuv — "
+                         f"PnL {t['pnl'] or 0:+.2f}$ ({t['note']})")
+    await _say(message, "*DEX savdolar (qog'oz)*\n" + "\n".join(lines))
+
+
+async def _dex_config(message):
+    c = config
+    alerts = "yoqiq" if c.DEX_ALERTS else "o'chiq"
+    await _say(message,
+               f"*DEX sozlamalari*\nXabarlar: *{alerts}* · "
+               f"Avto-savdo: *{dex.mode()}*\nTarmoqlar: {', '.join(c.DEX_CHAINS)}\n\n"
+               f"*Filtr*\nLikvidlik ≥ ${c.DEX_MIN_LIQUIDITY:,.0f}\nHajm 24s ≥ ${c.DEX_MIN_VOLUME:,.0f}\n"
+               f"Yoshi ≥ {c.DEX_MIN_AGE_H:g} soat\nXavfsizlik bahosi ≥ {c.DEX_MIN_SCORE:g}\n"
+               "Kontrakt: honeypot, soliq, yashirin egasi, mint (GoPlus / RugCheck)\n\n"
+               f"*Savdo (qog'oz)*\n${c.DEX_TRADE_USDT:g} / savdo · max {c.DEX_MAX_POSITIONS} pozitsiya\n"
+               f"TP +{c.DEX_TP_PCT:g}% · SL -{c.DEX_SL_PCT:g}% · muddat {c.DEX_MAX_HOLD_H:g} soat\n"
+               f"Kunlik zarar limiti ${c.DEX_DAILY_LOSS_LIMIT:g}")
+
+
 _SYMBOL_RE = re.compile(r"^[A-Za-z0-9]{2,10}(/[A-Za-z]{3,5})?$")
 
 
@@ -318,12 +483,15 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     routes = {
         B_SIGNAL: cmd_signal, B_SCAN: cmd_scan, B_TOP: cmd_top, B_NEWS: cmd_news,
         B_POS: cmd_positions, B_TRADES: cmd_trades, B_BAL: cmd_balance, B_MODE: cmd_mode,
-        B_INV: cmd_investors, B_HELP: cmd_help,
+        B_INV: cmd_investors, B_HELP: cmd_help, B_DEX: cmd_dex,
     }
     fn = routes.get(text)
     if fn:
         ctx.args = []
         await fn(update, ctx)
+    elif dex.is_address(text):
+        ctx.args = [text]
+        await cmd_dex(update, ctx)
     elif _SYMBOL_RE.match(text):
         ctx.args = [text]
         await cmd_signal(update, ctx)
@@ -338,7 +506,7 @@ def build_app() -> Application:
         "scan": cmd_scan, "top": cmd_top, "watch": cmd_watch, "unwatch": cmd_unwatch,
         "list": cmd_list, "news": cmd_news, "investors": cmd_investors,
         "balance": cmd_balance, "positions": cmd_positions, "trades": cmd_trades,
-        "mode": cmd_mode,
+        "mode": cmd_mode, "dex": cmd_dex,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))

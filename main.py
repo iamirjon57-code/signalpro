@@ -64,7 +64,9 @@ async def amain():
             log.error("Pozitsiyalarni tiklashda xato: %s", e)
         if not config.TESTNET:
             log.warning("DIQQAT: REAL PUL bilan avto-savdo yoqilgan")
-    await asyncio.gather(run_web(), run_bot(), engine.loop(), engine.tp_sl_loop())
+    import dex
+    await asyncio.gather(run_web(), run_bot(), engine.loop(), engine.tp_sl_loop(),
+                         dex.loop(engine.broadcast))
 
 
 if __name__ == "__main__":
