@@ -242,24 +242,105 @@ def _evm_security(chain: str, address: str) -> dict:
     holders = int(_f(d.get("holder_count")))
     if 0 < holders < 200:
         warn.append(f"Egalari kam: {holders} ta")
-    return {"ok": not bad, "bad": bad, "warn": warn, "source": "GoPlus"}
+    hp = _honeypot(chain, address)
+    bad, warn = bad + hp["bad"], warn + hp["warn"]
+    ok = (not bad) if hp["sim"] else None     # sotuv simulyatsiyasi o'tmasa — "tekshirib bo'lmadi"
+    return {"ok": ok, "bad": bad, "warn": warn, "source": "GoPlus + Honeypot.is"}
+
+
+HONEYPOT_CHAINS = {"ethereum": 1, "bsc": 56, "base": 8453}
+
+
+def _honeypot(chain: str, address: str) -> dict:
+    """Honeypot.is: tangani amalda sotib olib-sotib ko'radi (simulyatsiya)."""
+    out = {"sim": True, "bad": [], "warn": []}
+    cid = HONEYPOT_CHAINS.get(chain)
+    if not cid:
+        return out            # bu tarmoqni Honeypot.is qo'llamaydi — faqat GoPlus natijasi
+    try:
+        j = _get(f"https://api.honeypot.is/v2/IsHoneypot?address={address}&chainID={cid}", ttl=1800) or {}
+    except Exception as e:  # noqa: BLE001
+        log.warning("Honeypot.is (%s): %s", address, e)
+        return {"sim": False, "bad": [], "warn": ["Sotuv simulyatsiyasini o'tkazib bo'lmadi (Honeypot.is javob bermadi)"]}
+    if (j.get("honeypotResult") or {}).get("isHoneypot"):
+        reason = _clean((j.get("honeypotResult") or {}).get("honeypotReason") or "")
+        out["bad"].append("Honeypot.is: sotib BO'LMAYDI" + (f" ({reason})" if reason != "?" else ""))
+    if not j.get("simulationSuccess"):
+        out["sim"] = False
+        out["warn"].append("Sotuv simulyatsiyasi muvaffaqiyatsiz — sotib bo'lishi tasdiqlanmadi")
+        return out
+    sim = j.get("simulationResult") or {}
+    for k, label in (("buyTax", "Haqiqiy xarid solig'i"), ("sellTax", "Haqiqiy sotuv solig'i"),
+                     ("transferTax", "O'tkazma solig'i")):
+        tax = _f(sim.get(k), 0)          # foizda: 5 = 5%
+        if tax > 10:
+            out["bad"].append(f"{label}: {tax:.0f}%")
+        elif tax > 3:
+            out["warn"].append(f"{label}: {tax:.0f}%")
+    ha = j.get("holderAnalysis") or {}
+    holders, failed = _f(ha.get("holders")), _f(ha.get("failed"))
+    if holders >= 20 and failed / holders > 0.10:
+        out["bad"].append(f"Egalarning {failed / holders * 100:.0f}% i sota olmaydi")
+    if _f(ha.get("siphoned")) > 0:
+        out["bad"].append("Ba'zi hamyonlardan tanga tortib olingan")
+    if _f(ha.get("highestTax")) > 25:
+        out["warn"].append(f"Ayrim hamyonlarga soliq {_f(ha.get('highestTax')):.0f}% gacha")
+    risk = str((j.get("summary") or {}).get("risk", "")).lower()
+    if risk in ("honeypot", "very_high", "high"):
+        out["bad"].append(f"Honeypot.is xavf darajasi: {risk}")
+    elif risk == "medium":
+        out["warn"].append("Honeypot.is xavf darajasi: o'rtacha")
+    return out
 
 
 def _sol_security(address: str) -> dict:
-    j = _get(f"https://api.rugcheck.xyz/v1/tokens/{address}/report/summary", ttl=1800) or {}
+    """RugCheck to'liq hisoboti: xavflar, yaratuvchi ulushi, insayderlar, eng yirik egalar."""
+    j = _get(f"https://api.rugcheck.xyz/v1/tokens/{address}/report", ttl=1800) or {}
     if "risks" not in j and "score" not in j:
         return {"ok": None, "bad": [], "warn": [], "source": "RugCheck"}
     bad, warn = [], []
+    if j.get("rugged"):
+        bad.append("RugCheck: bu tanga allaqachon RUG bo'lgan")
+    tok = j.get("token") or {}
+    if j.get("mintAuthority") or tok.get("mintAuthority"):
+        bad.append("Egasi yangi tanga chiqara oladi (mint yopilmagan)")
+    if j.get("freezeAuthority") or tok.get("freezeAuthority"):
+        bad.append("Egasi hamyoningizdagi tangani muzlatib qo'ya oladi")
     for r in j.get("risks") or []:
         name = _clean(r.get("name"))
         (bad if str(r.get("level", "")).lower() == "danger" else warn).append(f"RugCheck: {name}")
     norm = _f(j.get("score_normalised"), -1)
     if norm >= 40:
         bad.append(f"RugCheck xavf bahosi yuqori: {norm:.0f}/100")
-    lp = j.get("lpLockedPct")
-    if lp is not None and _f(lp) < 50:
-        warn.append(f"Likvidlikning faqat {_f(lp):.0f}% qulflangan")
-    return {"ok": not bad, "bad": bad, "warn": warn[:6], "source": "RugCheck"}
+    supply = _f(tok.get("supply"))
+    if supply > 0:
+        cpct = _f(j.get("creatorBalance")) / supply * 100
+        if cpct > 20:
+            bad.append(f"Yaratuvchida {cpct:.0f}% tanga — xohlagan payt sotib yuborishi mumkin")
+        elif cpct > 5:
+            warn.append(f"Yaratuvchida {cpct:.0f}% tanga")
+    holders = [h for h in (j.get("topHolders") or []) if isinstance(h, dict)]
+    insiders = sum(_f(h.get("pct")) for h in holders if h.get("insider"))
+    if insiders > 15:
+        bad.append(f"Insayder hamyonlarda {insiders:.0f}% tanga")
+    elif insiders > 3:
+        warn.append(f"Insayder hamyonlarda {insiders:.0f}% tanga")
+    if _f(j.get("graphInsidersDetected")) >= 20:
+        warn.append(f"Bir-biriga bog'langan {_f(j.get('graphInsidersDetected')):.0f} ta hamyon topildi")
+    # Eng yirik egalar (birinchi o'rindagi ko'pincha likvidlik hovuzi bo'ladi — uni hisobga olmaymiz)
+    pcts = sorted((_f(h.get("pct")) for h in holders), reverse=True)
+    if len(pcts) > 1 and pcts[1] > 15:
+        warn.append(f"Bitta hamyonda {pcts[1]:.0f}% tanga")
+    if sum(pcts[1:11]) > 50:
+        warn.append(f"Eng yirik 10 hamyonda {sum(pcts[1:11]):.0f}% tanga")
+    total = _f(j.get("totalHolders"))
+    if 0 < total < 300:
+        warn.append(f"Egalari kam: {total:.0f} ta")
+    lps = [_f(((m or {}).get("lp") or {}).get("lpLockedPct"), -1) for m in (j.get("markets") or [])]
+    lps = [x for x in lps if x >= 0]
+    if lps and max(lps) < 50:
+        warn.append(f"Likvidlikning ko'pi qulflanmagan (eng yaxshisi {max(lps):.0f}%)")
+    return {"ok": not bad, "bad": bad, "warn": warn[:7], "source": "RugCheck"}
 
 
 def security(chain: str, address: str) -> dict:
@@ -274,6 +355,35 @@ def security(chain: str, address: str) -> dict:
     return {"ok": None, "bad": [], "warn": [], "source": ""}
 
 
+GECKO_NETWORKS = {"solana": "solana", "ethereum": "eth", "bsc": "bsc", "base": "base",
+                  "arbitrum": "arbitrum", "polygon": "polygon_pos", "optimism": "optimism",
+                  "avalanche": "avax"}
+
+
+def cross_check(t: dict) -> dict:
+    """GeckoTerminal bilan solishtiradi: narx/likvidlik mos keladimi, CoinGecko ro'yxatida bormi."""
+    out = {"warn": [], "coingecko": "", "found": False}
+    net = GECKO_NETWORKS.get(t["chain"])
+    if not net or not t["address"]:
+        return out
+    try:
+        j = _get(f"https://api.geckoterminal.com/api/v2/networks/{net}/tokens/{t['address']}", ttl=600) or {}
+    except Exception as e:  # noqa: BLE001
+        log.info("GeckoTerminal (%s): %s", t["address"], e)
+        return out
+    a = ((j.get("data") or {}).get("attributes")) or {}
+    if not a:
+        return out
+    out["found"] = True
+    out["coingecko"] = str(a.get("coingecko_coin_id") or "")
+    gp, greserve = _f(a.get("price_usd")), _f(a.get("total_reserve_in_usd"))
+    if gp > 0 and t["price"] > 0 and abs(gp - t["price"]) / t["price"] > 0.15:
+        out["warn"].append(f"Narx manbalarda farq qiladi: DexScreener ${t['price']:.6g}, GeckoTerminal ${gp:.6g}")
+    if greserve > 0 and t["liq"] > 0 and greserve < t["liq"] * 0.5:
+        out["warn"].append(f"Likvidlik ikkinchi manbada ancha kam: {_money(greserve)}")
+    return out
+
+
 def evaluate(pair: dict, deep: bool = True) -> dict:
     """Tangani to'liq baholaydi: bozor filtri + (deep bo'lsa) kontrakt tekshiruvi."""
     t = summarize(pair)
@@ -284,12 +394,18 @@ def evaluate(pair: dict, deep: bool = True) -> dict:
         bad, warn = bad + sec["bad"], warn + sec["warn"]
     if deep and sec["ok"] is None:
         warn = warn + ["Kontraktni tekshirib bo'lmadi"]
+    cg = ""
+    if deep and not bad:      # xavfli tanga uchun qo'shimcha so'rov yubormaymiz
+        x = cross_check(t)
+        warn, cg = warn + x["warn"], x["coingecko"]
     score = max(0, 100 - 30 * len(bad) - 10 * len(warn))
+    if cg:
+        score = min(100, score + 5)   # CoinGecko ro'yxatida bo'lishi — ijobiy belgi
     if bad:
         score = min(score, 30)   # bitta jiddiy xavf bo'lsa ham baho past ko'rinsin
     verdict = "bad" if bad else ("ok" if (sec["ok"] is True and score >= config.DEX_MIN_SCORE) else "warn")
     t.update(bad=bad, warn=warn, score=score, verdict=verdict,
-             sec_ok=sec["ok"], sec_source=sec["source"])
+             sec_ok=sec["ok"], sec_source=sec["source"], coingecko=cg)
     return t
 
 
@@ -351,6 +467,10 @@ def report(t: dict, title: str = "") -> str:
     ]
     lines += [f"⛔ {b}" for b in t["bad"][:6]]
     lines += [f"⚠️ {w}" for w in t["warn"][:6]]
+    if t.get("coingecko"):
+        lines.append("✅ CoinGecko ro'yxatida bor")
+    if t.get("sec_source"):
+        lines.append(f"Tekshirildi: {t['sec_source']}")
     if t["verdict"] == "ok":
         lines.append("Filtr kafolat emas — tanga baribir qadrsizlanishi mumkin.")
     lines.append(f"`{t['address']}`")
