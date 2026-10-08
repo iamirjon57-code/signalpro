@@ -169,7 +169,8 @@ def market_check(t: dict) -> tuple[list[str], list[str]]:
         bad.append(f"Deyarli hech kim sotmayapti ({t['sells24']} sotuv / {t['buys24']} xarid) — honeypot belgisi")
     if t["chg24"] <= -50:
         bad.append(f"Narx 24 soatda {t['chg24']:.0f}% tushgan")
-    if t["fdv"] > 0:
+    # Yirik tangalar asosan yirik birjalarda sotiladi — ularga bu qoida qo'llanmaydi
+    if t["fdv"] > 0 and t["liq"] < 1_000_000:
         ratio = t["liq"] / t["fdv"]
         if ratio < 0.01:
             bad.append(f"Likvidlik qiymatga nisbatan juda kam ({ratio * 100:.1f}%)")
