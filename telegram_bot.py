@@ -16,6 +16,7 @@ import config
 import data
 import dex
 import engine
+import ai
 import market
 import investors
 import signals
@@ -47,6 +48,7 @@ HELP = """*Signal Pro* — savdo signallari boti
 /trades — oxirgi savdolar
 /mode — avto-savdo rejimi
 /market — bozor holati (kayfiyat indeksi, BTC ulushi, funding)
+/ai `SYMBOL yoki savol` — AI maslahatchi (Claude)
 /dex `NOM yoki MANZIL` — DexScreener'dan tangani tekshirish (firibgarlik filtri bilan)
 /stop — signallarni to'xtatish
 /start — obuna bo'lish"""
@@ -61,10 +63,11 @@ B_BAL, B_MODE = "💰 Balans", "⚙️ Rejim"
 B_INV, B_HELP = "🏦 Investorlar", "❓ Yordam"
 B_DEX = "🦎 DEX tangalar"
 B_MARKET = "🌡 Bozor holati"
+B_AI = "🤖 AI maslahatchi"
 
 MENU = ReplyKeyboardMarkup(
     [[B_SIGNAL, B_SCAN], [B_TOP, B_NEWS], [B_POS, B_TRADES], [B_BAL, B_MODE],
-     [B_DEX, B_MARKET], [B_INV, B_HELP]],
+     [B_DEX, B_MARKET], [B_AI, B_INV], [B_HELP]],
     resize_keyboard=True,
 )
 
@@ -76,10 +79,10 @@ def _rows(items, per_row):
     return [items[i:i + per_row] for i in range(0, len(items), per_row)]
 
 
-def symbol_picker() -> InlineKeyboardMarkup:
+def symbol_picker(prefix: str = "sig") -> InlineKeyboardMarkup:
     """Aktiv tanlash tugmalari: kripto, aksiya, forex va qo'shimcha kuzatuv."""
     def btns(symbols):
-        return [InlineKeyboardButton(s.replace("/USDT", ""), callback_data=f"sig:{s}") for s in symbols]
+        return [InlineKeyboardButton(s.replace("/USDT", ""), callback_data=f"{prefix}:{s}") for s in symbols]
     rows = []
     for group, per_row in ((config.CRYPTO_SYMBOLS, 5), (config.STOCK_SYMBOLS, 5),
                            (config.FOREX_SYMBOLS, 4), (store.watchlist(), 4)):
@@ -90,8 +93,8 @@ def symbol_picker() -> InlineKeyboardMarkup:
 def signal_actions(sym: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🔄 Yangilash", callback_data=f"sig:{sym}"),
-        InlineKeyboardButton("⬅️ Boshqa aktiv", callback_data="pick"),
-    ]])
+        InlineKeyboardButton("🤖 AI tahlil", callback_data=f"ai:{sym}"),
+    ], [InlineKeyboardButton("⬅️ Boshqa aktiv", callback_data="pick")]])
 
 
 def _admin(update: Update) -> bool:
@@ -167,6 +170,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except BadRequest:
             pass
         await _analyze_into(q.message, sym)
+    elif d == "aipick":
+        await q.edit_message_text("🤖 Qaysi aktivni AI tahlil qilsin?", reply_markup=symbol_picker("ai"))
+    elif d.startswith("ai:"):
+        await _ai_analyze(q.message, d[3:], update)
     elif d.startswith("news:"):
         await _send_news(q.message, d[5:])
     elif d.startswith("dx:"):
@@ -491,6 +498,68 @@ async def cmd_market(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _say(m, text, edit=True)
 
 
+AI_SETUP = ("🤖 AI hali ulanmagan.\n\n"
+            "1) console.anthropic.com saytida API kalit oling (Billing'da kredit bo'lishi kerak — "
+            "Claude Pro obunasi API'ni o'z ichiga olmaydi)\n"
+            "2) Railway → web → Variables → ANTHROPIC_API_KEY = kalitingiz\n"
+            "Bot o'zi qayta ishga tushadi va AI yoqiladi.\n\n"
+            "⚠️ Kalitni hech kimga (chatga ham) yubormang.")
+
+
+async def _ai_allowed(update: Update) -> bool:
+    msg = update.effective_message
+    if not ai.enabled():
+        await msg.reply_text(AI_SETUP)
+        return False
+    if config.AI_ADMIN_ONLY and not _admin(update):
+        await msg.reply_text("🔒 AI maslahatchi faqat bot egasi uchun.")
+        return False
+    return True
+
+
+async def _ai_analyze(message, sym: str, update: Update):
+    if not await _ai_allowed(update):
+        return
+    m = await message.reply_text(f"🤖 {sym} — AI tahlil qilmoqda (texnik + bozor + yangiliklar)...")
+    try:
+        sig = await asyncio.to_thread(signals.analyze, sym)
+        text = await asyncio.to_thread(ai.analyze_signal, sig)
+        await m.edit_text(f"🤖 AI tahlil — {sym}\n\n{text}\n\nℹ️ Bu moliyaviy maslahat emas."[:4000],
+                          reply_markup=InlineKeyboardMarkup([[
+                              InlineKeyboardButton("📊 Texnik signal", callback_data=f"sig:{sym}"),
+                              InlineKeyboardButton("⬅️ Boshqa aktiv", callback_data="aipick")]]))
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ AI tahlil xatosi: {e}")
+
+
+async def _ai_ask(update: Update, question: str):
+    if not await _ai_allowed(update):
+        return
+    m = await update.effective_message.reply_text("🤖 O'ylayapman...")
+    try:
+        text = await asyncio.to_thread(ai.ask, question)
+        await m.edit_text(text[:4000] or "Javob bo'sh keldi.")
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ AI xatosi: {e}")
+
+
+async def cmd_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    arg = " ".join(ctx.args or []).strip()
+    if not arg:
+        if not await _ai_allowed(update):
+            return
+        await update.effective_message.reply_text(
+            "🤖 AI maslahatchi (Claude)\n\nAktivni tanlang — AI texnik ko'rsatkichlar, bozor kayfiyati va "
+            "so'nggi yangiliklarni birga tahlil qiladi.\n\nYoki istalgan savolingizni oddiy matn qilib "
+            "yozing (masalan: \"Bugun BTC olsam bo'ladimi?\").\n\n"
+            f"Holat: {ai.status()}\nAvto-savdo AI tekshiruvi: {'yoqilgan' if config.AI_TRADE_FILTER else 'o‘chiq'}",
+            reply_markup=symbol_picker("ai"))
+    elif _SYMBOL_RE.match(arg):
+        await _ai_analyze(update.effective_message, arg.upper(), update)
+    else:
+        await _ai_ask(update, arg)
+
+
 _SYMBOL_RE = re.compile(r"^[A-Za-z0-9]{2,10}(/[A-Za-z]{3,5})?$")
 
 
@@ -500,7 +569,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     routes = {
         B_SIGNAL: cmd_signal, B_SCAN: cmd_scan, B_TOP: cmd_top, B_NEWS: cmd_news,
         B_POS: cmd_positions, B_TRADES: cmd_trades, B_BAL: cmd_balance, B_MODE: cmd_mode,
-        B_INV: cmd_investors, B_HELP: cmd_help, B_DEX: cmd_dex, B_MARKET: cmd_market,
+        B_INV: cmd_investors, B_HELP: cmd_help, B_DEX: cmd_dex, B_MARKET: cmd_market, B_AI: cmd_ai,
     }
     fn = routes.get(text)
     if fn:
@@ -512,6 +581,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif _SYMBOL_RE.match(text):
         ctx.args = [text]
         await cmd_signal(update, ctx)
+    elif ai.enabled() and len(text) > 3 and (_admin(update) or not config.AI_ADMIN_ONLY):
+        await _ai_ask(update, text)   # oddiy savol — AI javob beradi
     else:
         await update.message.reply_text("Pastdagi tugmalardan birini tanlang 👇", reply_markup=MENU)
 
@@ -523,7 +594,7 @@ def build_app() -> Application:
         "scan": cmd_scan, "top": cmd_top, "watch": cmd_watch, "unwatch": cmd_unwatch,
         "list": cmd_list, "news": cmd_news, "investors": cmd_investors,
         "balance": cmd_balance, "positions": cmd_positions, "trades": cmd_trades,
-        "mode": cmd_mode, "dex": cmd_dex, "market": cmd_market,
+        "mode": cmd_mode, "dex": cmd_dex, "market": cmd_market, "ai": cmd_ai,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
@@ -554,6 +625,9 @@ def build_app() -> Application:
             BotCommand("scan", "Barchasini tekshirish"),
             BotCommand("top", "Oxirgi signallar"),
             BotCommand("investors", "Yirik investorlar portfeli"),
+            BotCommand("ai", "AI maslahatchi (Claude)"),
+            BotCommand("market", "Bozor holati"),
+            BotCommand("dex", "DEX tangalar"),
             BotCommand("news", "Yangiliklar"),
             BotCommand("positions", "Ochiq pozitsiyalar"),
             BotCommand("balance", "Birja balansi"),

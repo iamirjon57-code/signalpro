@@ -129,3 +129,12 @@ FNG_MAX_BUY = _f("FNG_MAX_BUY", 85)
 FUNDING_MAX_BUY = _f("FUNDING_MAX_BUY", 0.08)
 # Signalni katta vaqt oralig'idagi trend bilan tasdiqlash (kripto). Bo'sh = o'chiq
 SIGNAL_HTF = _env("SIGNAL_HTF", "4h")
+
+# --- AI maslahatchi (Claude API) ---
+# Kalit: console.anthropic.com → API Keys. Bo'sh bo'lsa AI o'chiq, bot odatdagidek ishlaydi.
+ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "")
+AI_MODEL = _env("AI_MODEL", "claude-sonnet-5")
+# Avto-savdoda har bir xariddan oldin AI tekshiruvi (rad etsa — savdo qilinmaydi)
+AI_TRADE_FILTER = _b("AI_TRADE_FILTER", "true")
+# AI bilan erkin suhbat faqat adminlarga (xarajatni nazorat qilish uchun)
+AI_ADMIN_ONLY = _b("AI_ADMIN_ONLY", "true")

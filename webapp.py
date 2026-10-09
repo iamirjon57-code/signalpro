@@ -84,7 +84,9 @@ async def setup_close(request: Request):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "auto_trade": trader.mode(), "symbols": len(engine.symbols_to_scan())}
+    import ai
+    return {"ok": True, "auto_trade": trader.mode(), "symbols": len(engine.symbols_to_scan()),
+            "ai": ai.enabled()}
 
 
 @app.get("/api/config")

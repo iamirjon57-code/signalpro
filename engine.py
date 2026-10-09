@@ -6,6 +6,7 @@ import logging
 
 import config
 import data
+import ai
 import market
 import signals
 import store
@@ -67,6 +68,18 @@ async def scan_once(force_notify: bool = False, full: bool = False) -> list[sign
             block = await asyncio.to_thread(market.buy_block_reason, sig.symbol)
             if block:
                 msg += f"\n\n⏸ Avto-savdo o'tkazilmadi: {block}"
+            elif ai.enabled() and config.AI_TRADE_FILTER:
+                try:
+                    ok, why = await asyncio.to_thread(ai.review_trade, sig)
+                    if ok:
+                        msg += f"\n\n🧠 AI tasdiqladi: {why}"
+                    else:
+                        block = f"AI rad etdi — {why}"
+                        msg += f"\n\n⏸ Avto-savdo o'tkazilmadi: {block}"
+                except Exception as e:  # noqa: BLE001
+                    # AI ishlamasa savdo to'xtamaydi — oddiy filtrlar bilan davom etadi
+                    log.warning("AI tekshiruvi: %s", e)
+                    msg += f"\n\n🧠 AI tekshiruvi ishlamadi ({str(e)[:80]}) — oddiy filtrlar bilan davom etildi"
         if config.AUTO_TRADE and sig.kind == "crypto" and not block:
             try:
                 res = await asyncio.to_thread(trader.execute, sig)
