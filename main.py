@@ -98,8 +98,9 @@ async def amain():
         if not config.TESTNET:
             log.warning("DIQQAT: REAL PUL bilan avto-savdo yoqilgan")
     import dex
+    import research
     await asyncio.gather(run_web(), run_bot(), engine.loop(), engine.tp_sl_loop(),
-                         dex.loop(engine.broadcast))
+                         dex.loop(engine.broadcast), research.loop(engine.broadcast))
 
 
 if __name__ == "__main__":

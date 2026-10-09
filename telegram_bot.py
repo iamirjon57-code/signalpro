@@ -18,6 +18,7 @@ import dex
 import engine
 import ai
 import market
+import research
 import investors
 import signals
 import store
@@ -49,6 +50,9 @@ HELP = """*Signal Pro* — savdo signallari boti
 /mode — avto-savdo rejimi
 /market — bozor holati (kayfiyat indeksi, BTC ulushi, funding)
 /ai `SYMBOL yoki savol` — AI maslahatchi (Claude)
+/global — global kripto va DEX bozori (DefiLlama, CoinGecko, GeckoTerminal)
+/ideas — AI investitsiya g'oyalari
+/report — kunlik hisobot (hozir)
 /dex `NOM yoki MANZIL` — DexScreener'dan tangani tekshirish (firibgarlik filtri bilan)
 /stop — signallarni to'xtatish
 /start — obuna bo'lish"""
@@ -64,15 +68,16 @@ B_INV, B_HELP = "🏦 Investorlar", "❓ Yordam"
 B_DEX = "🦎 DEX tangalar"
 B_MARKET = "🌡 Bozor holati"
 B_AI = "🤖 AI maslahatchi"
+B_GLOBAL, B_IDEAS = "🌍 Global bozor", "💡 Investitsiya g'oyalari"
 
 MENU = ReplyKeyboardMarkup(
     [[B_SIGNAL, B_SCAN], [B_TOP, B_NEWS], [B_POS, B_TRADES], [B_BAL, B_MODE],
-     [B_DEX, B_MARKET], [B_AI, B_INV], [B_HELP]],
+     [B_DEX, B_MARKET], [B_GLOBAL, B_IDEAS], [B_AI, B_INV], [B_HELP]],
     resize_keyboard=True,
 )
 
-NEWS_TOPICS = [("₿ Kripto", "bitcoin crypto"), ("📈 Aksiyalar", "stock market"),
-               ("💱 Forex", "forex dollar"), ("🥇 Oltin", "gold price")]
+NEWS_TOPICS = [("₿ Kripto", "crypto"), ("📈 Aksiyalar va moliya", "markets"),
+               ("🦎 DeFi va DEX", "defi"), ("🥇 Oltin, forex, Fed", "gold")]
 
 
 def _rows(items, per_row):
@@ -174,6 +179,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("🤖 Qaysi aktivni AI tahlil qilsin?", reply_markup=symbol_picker("ai"))
     elif d.startswith("ai:"):
         await _ai_analyze(q.message, d[3:], update)
+    elif d.startswith("gnews:"):
+        await _send_digest(q.message, d[6:])
+    elif d == "ideas":
+        await _send_ideas(q.message, update)
     elif d.startswith("news:"):
         await _send_news(q.message, d[5:])
     elif d.startswith("dxai:"):
@@ -203,6 +212,56 @@ async def _send_news(message, query: str):
         plain = "\n\n".join(f"• {i['title'][:110]}\n{i['link']}" for i in items)
         await message.reply_text(f"{query} bo'yicha yangiliklar:\n\n" + plain,
                                  disable_web_page_preview=True)
+
+
+async def _send_digest(message, topic: str):
+    m = await message.reply_text("⏳ Dunyo yangiliklari yig'ilmoqda" + (" va o'zbekchaga o'girilmoqda..." if ai.enabled() else "..."))
+    try:
+        if ai.enabled():
+            text = await asyncio.to_thread(ai.news_digest, topic)
+            await m.edit_text(f"📰 {research.TOPIC_NAMES.get(topic, topic)} — dunyo yangiliklari\n\n{text}"[:4000],
+                              disable_web_page_preview=True)
+        else:
+            items = await asyncio.to_thread(research.headlines, topic, 8)
+            await m.edit_text(research.plain_news_text(topic, items)[:4000] if items else "Yangilik topilmadi.",
+                              disable_web_page_preview=True)
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ Yangiliklar xatosi: {e}")
+
+
+async def cmd_global(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    m = await update.effective_message.reply_text("⏳ Global bozor ma'lumotlari yuklanmoqda (DefiLlama, CoinGecko, GeckoTerminal)...")
+    text = await asyncio.to_thread(research.global_text)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("💡 AI investitsiya g'oyalari", callback_data="ideas")],
+                               [InlineKeyboardButton("🦎 DEX trend (filtr bilan)", callback_data="dex:trend")]])
+    await _say(m, text, kb, edit=True)
+
+
+async def _send_ideas(message, update: Update):
+    if not await _ai_allowed(update):
+        return
+    m = await message.reply_text("💡 AI global bozor, yangiliklar va signallarni tahlil qilmoqda (30-60 soniya)...")
+    try:
+        text = await asyncio.to_thread(ai.invest_ideas)
+        await m.edit_text(f"💡 Investitsiya va savdo g'oyalari\n\n{text}\n\n"
+                          "ℹ️ Bu moliyaviy maslahat emas. Faqat yo'qotishga tayyor pulni tikib, stop-loss qo'ying."[:4000])
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ AI xatosi: {e}")
+
+
+async def cmd_ideas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _send_ideas(update.effective_message, update)
+
+
+async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _ai_allowed(update):
+        return
+    m = await update.effective_message.reply_text("☀️ Hisobot tayyorlanmoqda (30-60 soniya)...")
+    try:
+        text = await asyncio.to_thread(ai.daily_report)
+        await m.edit_text(f"☀️ Investor hisoboti\n\n{text}"[:4000])
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ AI xatosi: {e}")
 
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -271,8 +330,10 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         kb = InlineKeyboardMarkup(_rows(
-            [InlineKeyboardButton(t, callback_data=f"news:{q}") for t, q in NEWS_TOPICS], 2))
-        await update.message.reply_text("Qaysi mavzu bo'yicha yangiliklar kerak?", reply_markup=kb)
+            [InlineKeyboardButton(t, callback_data=f"gnews:{q}") for t, q in NEWS_TOPICS], 2))
+        note = ("Dunyo nashrlari (Cointelegraph, CoinDesk, CNBC, Yahoo Finance, MarketWatch va b.) — "
+                + ("AI o'zbekchaga o'girib, bozorga ta'sirini aytadi." if ai.enabled() else "inglizcha sarlavhalar."))
+        await update.message.reply_text(f"📰 Qaysi mavzu bo'yicha yangiliklar kerak?\n\n{note}", reply_markup=kb)
         return
     await _send_news(update.message, " ".join(ctx.args))
 
@@ -597,6 +658,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         B_SIGNAL: cmd_signal, B_SCAN: cmd_scan, B_TOP: cmd_top, B_NEWS: cmd_news,
         B_POS: cmd_positions, B_TRADES: cmd_trades, B_BAL: cmd_balance, B_MODE: cmd_mode,
         B_INV: cmd_investors, B_HELP: cmd_help, B_DEX: cmd_dex, B_MARKET: cmd_market, B_AI: cmd_ai,
+        B_GLOBAL: cmd_global, B_IDEAS: cmd_ideas,
     }
     fn = routes.get(text)
     if fn:
@@ -622,6 +684,7 @@ def build_app() -> Application:
         "list": cmd_list, "news": cmd_news, "investors": cmd_investors,
         "balance": cmd_balance, "positions": cmd_positions, "trades": cmd_trades,
         "mode": cmd_mode, "dex": cmd_dex, "market": cmd_market, "ai": cmd_ai,
+        "global": cmd_global, "ideas": cmd_ideas, "report": cmd_report,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
@@ -653,6 +716,9 @@ def build_app() -> Application:
             BotCommand("top", "Oxirgi signallar"),
             BotCommand("investors", "Yirik investorlar portfeli"),
             BotCommand("ai", "AI maslahatchi (Claude)"),
+            BotCommand("ideas", "AI investitsiya g'oyalari"),
+            BotCommand("global", "Global kripto va DEX bozori"),
+            BotCommand("report", "Kunlik hisobot"),
             BotCommand("market", "Bozor holati"),
             BotCommand("dex", "DEX tangalar"),
             BotCommand("news", "Yangiliklar"),

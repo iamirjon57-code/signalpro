@@ -138,3 +138,11 @@ AI_MODEL = _env("AI_MODEL", "claude-sonnet-5")
 AI_TRADE_FILTER = _b("AI_TRADE_FILTER", "true")
 # AI bilan erkin suhbat faqat adminlarga (xarajatni nazorat qilish uchun)
 AI_ADMIN_ONLY = _b("AI_ADMIN_ONLY", "true")
+
+# --- Global yangiliklar va kunlik hisobot (AI kerak) ---
+TZ_OFFSET_H = _f("TZ_OFFSET_H", 5)              # Toshkent vaqti (UTC+5)
+DAILY_REPORT = _b("DAILY_REPORT", "true")       # har kuni ertalab hisobot
+DAILY_REPORT_HOUR = int(_f("DAILY_REPORT_HOUR", 9))
+NEWS_ALERTS = _b("NEWS_ALERTS", "true")         # bozorni qimirlatadigan yangilik chiqsa — darhol xabar
+NEWS_ALERT_INTERVAL_MIN = _f("NEWS_ALERT_INTERVAL_MIN", 60)
+NEWS_ALERT_MAX = int(_f("NEWS_ALERT_MAX", 2))

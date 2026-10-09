@@ -108,13 +108,15 @@ def _market_context(symbol: str | None = None) -> str:
     return "\n".join(parts) or "ma'lumot yo'q"
 
 
-def _news_context(symbol: str, n: int = 6) -> str:
-    import investors
-    base = symbol.split("/")[0]
-    q = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "BNB binance",
-         "XRP": "XRP ripple"}.get(base, base)
-    items = investors.news(q + (" crypto" if "/" in symbol else ""), n)
-    return "\n".join(f"- {i['title'][:140]} ({i.get('date', '')[:16]})" for i in items) or "yangilik topilmadi"
+def _news_context(symbol: str, n: int = 8) -> str:
+    """Global lentalar (Cointelegraph, CoinDesk, CNBC, Yahoo...) + Google News."""
+    import research
+    items = research.symbol_news(symbol, n)
+    lines = [f"- {i['title'][:160]} ({i['source']}, {research.age(i['ts'])} oldin)" for i in items]
+    if len(lines) < 3:   # aktivga oid kam bo'lsa — umumiy bozor yangiliklari
+        topic = "crypto" if "/" in symbol and symbol.split("/")[1] in ("USDT", "USDC", "USD") else "markets"
+        lines += [f"- [umumiy] {i['title'][:160]} ({i['source']})" for i in research.headlines(topic, 5)]
+    return "\n".join(lines) or "yangilik topilmadi"
 
 
 def _signal_context(sig) -> str:
@@ -231,3 +233,120 @@ def review_dex(t: dict) -> tuple[bool, str]:
         raise RuntimeError(f"AI javobi tushunarsiz: {out[:100]}")
     j = json.loads(m.group(0))
     return bool(j.get("approve")), str(j.get("reason") or "").strip()[:300]
+
+
+# ---------------- Global yangiliklar va investitsiya ----------------
+
+_digest_cache: dict[str, tuple[float, str]] = {}
+
+
+def _cached_call(key: str, ttl: int, fn) -> str:
+    hit = _digest_cache.get(key)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    val = fn()
+    _digest_cache[key] = (time.time(), val)
+    return val
+
+
+def _items_text(items: list[dict]) -> str:
+    import research
+    return "\n".join(f"{n}. {i['title']} [{i['source']}, {research.age(i['ts'])} oldin]"
+                      + (f" — {i['desc'][:160]}" if i.get("desc") else "")
+                      for n, i in enumerate(items, 1))
+
+
+def news_digest(topic: str) -> str:
+    """Mavzu bo'yicha global yangiliklar — o'zbekcha qisqa sharh, bozorga ta'siri bilan."""
+    import research
+
+    def make():
+        items = research.headlines(topic, 18)
+        if not items:
+            return "Yangilik topilmadi (manbalar javob bermadi)."
+        prompt = (
+            f"Mavzu: {research.TOPIC_NAMES.get(topic, topic)}. Quyida dunyo nashrlaridagi eng so'nggi "
+            "yangiliklar (inglizcha). Investor va treyder uchun eng muhim 7-8 tasini tanla va o'zbekchaga "
+            "o'gir.\n\n" + _items_text(items) + "\n\n"
+            "Format:\n"
+            "Boshida 1-2 gapda umumiy kayfiyat (📈 ijobiy / 📉 salbiy / ➖ neytral).\n"
+            "Keyin har bir yangilik alohida qatorda: belgi (📈/📉/➖) + qisqa o'zbekcha mazmun "
+            "(1-2 gap) + qaysi aktivlarga ta'sir qiladi + (manba).\n"
+            "Oxirida: 💡 Investor uchun xulosa — 2-3 gap."
+        )
+        return _call(prompt, 1300)
+    return _cached_call(f"digest:{topic}", 1800, make)
+
+
+def invest_ideas() -> str:
+    """Global ma'lumotlar + texnik signallar asosida qisqa va uzoq muddatli g'oyalar."""
+    import research
+    import store
+
+    def make():
+        sigs = store.recent_signals(15)
+        sig_txt = "\n".join(f"- {s['symbol']}: {s['action']} (ishonch {s['confidence']}%, RSI {s['rsi']:.0f}, "
+                            f"trend {s['trend']})" for s in sigs) or "signal yo'q"
+        news = research.headlines("crypto", 10) + research.headlines("markets", 8)
+        prompt = (
+            "Sen investitsiya tahlilchisisan. Quyidagi ma'lumotlar asosida o'zbek investori uchun "
+            "g'oyalar tayyorla.\n\n"
+            f"BOZOR KAYFIYATI:\n{_market_context()}\n\n"
+            f"GLOBAL KRIPTO/DEX:\n{research.global_context()}\n\n"
+            f"BOTNING TEXNIK SIGNALLARI:\n{sig_txt}\n\n"
+            f"SO'NGGI YANGILIKLAR:\n{_items_text(news)}\n\n"
+            "Format:\n"
+            "🌍 Umumiy holat — 2 gap\n"
+            "⚡ Qisqa muddatli savdo g'oyalari (1-7 kun) — 2-3 ta: aktiv, yo'nalish, kirish/stop/maqsad, sabab\n"
+            "🏦 Uzoq muddatli investitsiya (6+ oy) — 2-3 ta: aktiv yoki soha, nega, portfeldagi ulushi\n"
+            "🚫 Hozir nimadan uzoq turish kerak — 1-2 ta\n"
+            "Har bir g'oyaga xavf darajasi (past/o'rta/yuqori). Portfelni bo'lish va stop-loss haqida eslat."
+        )
+        return _call(prompt, 1500)
+    return _cached_call("ideas", 3600, make)
+
+
+def daily_report() -> str:
+    import research
+    news = research.headlines("crypto", 10) + research.headlines("markets", 8) + research.headlines("defi", 5)
+    prompt = (
+        "Ertalabki investor hisobotini tayyorla (o'zbekcha, Telegram uchun, 25-35 qator).\n\n"
+        f"BOZOR:\n{_market_context('BTC/USDT')}\n\nGLOBAL:\n{research.global_context()}\n\n"
+        f"YANGILIKLAR:\n{_items_text(news)}\n\n"
+        "Bo'limlar: 🌡 Bozor kayfiyati · 📰 Eng muhim 5 yangilik (ta'siri bilan) · 🦎 DEX/DeFi'da nima "
+        "bo'lyapti · 📅 Bugun nimaga e'tibor berish kerak · 💡 Kun g'oyasi (xavfi bilan)."
+    )
+    return _call(prompt, 1600)
+
+
+def important_news(items: list[dict]) -> list[str]:
+    """Yangi sarlavhalardan faqat bozorni qimirlatadiganlarini tanlab, o'zbekcha xabar qiladi."""
+    if not items:
+        return []
+    prompt = (
+        "Quyida yangi chiqqan yangiliklar. Faqat bozorga KUCHLI ta'sir qiladiganlarini tanla (masalan: "
+        "Fed qarori, yirik birja buzilishi/xakerlik, ETF qarori, yirik kompaniya hisobotida katta "
+        "kutilmagan natija, regulyator taqiqi, urush/sanksiya). Oddiy tahlil va reklama maqolalarini tashla. "
+        f"Ko'pi bilan {config.NEWS_ALERT_MAX} ta. Hech biri muhim bo'lmasa — bo'sh ro'yxat.\n\n"
+        + _items_text(items) + "\n\n"
+        'Faqat JSON: {"alerts": [{"n": raqam, "uz": "o\'zbekcha 2-3 gap: nima bo\'ldi va bozorga ta\'siri", '
+        '"impact": "up|down|mixed", "assets": "BTC, ETH..."}]}'
+    )
+    out = _call(prompt, 900, system=SYSTEM + " Faqat so'ralgan JSON formatida javob ber.")
+    m = re.search(r"\{.*\}", out, re.S)
+    if not m:
+        return []
+    try:
+        alerts = json.loads(m.group(0)).get("alerts") or []
+    except ValueError:
+        return []
+    icon = {"up": "📈", "down": "📉"}
+    msgs = []
+    for a in alerts[: config.NEWS_ALERT_MAX]:
+        try:
+            src = items[int(a.get("n", 0)) - 1]
+        except (ValueError, IndexError):
+            continue
+        msgs.append(f"🚨 Muhim yangilik {icon.get(a.get('impact'), '⚖️')}\n\n{a.get('uz', '').strip()}\n\n"
+                    f"Ta'sir: {a.get('assets', '-')}\nManba: {src['source']} — {src['link']}")
+    return msgs
