@@ -264,9 +264,12 @@ def _sellable(ex, symbol: str, want: float) -> float:
     return amount
 
 
-def _close(symbol: str, pos: dict, price: float, note: str) -> dict:
+def _close(symbol: str, pos: dict, price: float, note: str, share: float = 1.0) -> dict:
+    """Pozitsiyani (yoki uning share qismini) sotadi."""
     ex = exchange()
-    amount = _sellable(ex, symbol, float(pos["amount"]))
+    partial = share < 0.999
+    want = float(pos["amount"]) * share
+    amount = _sellable(ex, symbol, want)
     order = _settle(ex, ex.create_order(symbol, "market", "sell", amount), symbol)
     fill = float(order.get("average") or price)
     proceeds = float(order.get("cost") or fill * amount)
@@ -274,18 +277,26 @@ def _close(symbol: str, pos: dict, price: float, note: str) -> dict:
     for f in (order.get("fees") or ([order["fee"]] if order.get("fee") else [])):
         if f and f.get("currency") == config.TRADE_QUOTE and f.get("cost"):
             proceeds -= float(f["cost"])
-    spent = float(pos.get("cost") or pos["entry"] * pos["amount"])
+    total_cost = float(pos.get("cost") or pos["entry"] * pos["amount"])
+    frac = min(1.0, amount / float(pos["amount"])) if pos["amount"] else 1.0
+    spent = total_cost * (frac if partial else 1.0)
     pnl = proceeds - spent
     store.save_trade(
         symbol=symbol, side="sell", amount=amount, price=fill, cost=proceeds,
         status=order.get("status", "closed"), order_id=str(order.get("id", "")),
         mode=mode(), note=note, pnl=round(pnl, 4),
     )
-    _positions.pop(symbol, None)
-    store.delete_position(symbol)
+    if partial:
+        pos = {**pos, "amount": float(pos["amount"]) - amount, "cost": total_cost - spent, "partial": 1}
+        _positions[symbol] = pos
+        store.save_position(symbol, pos)
+    else:
+        _positions.pop(symbol, None)
+        store.delete_position(symbol)
     log.info("SOTILDI %s %s @ %s, PnL %.2f (%s)", amount, symbol, fill, pnl, note)
     return {"symbol": symbol, "side": "sell", "amount": amount, "price": fill, "cost": proceeds,
-            "pnl": round(pnl, 2), "mode": mode(), "order_id": str(order.get("id", ""))}
+            "pnl": round(pnl, 2), "mode": mode(), "order_id": str(order.get("id", "")),
+            "partial": partial}
 
 
 def execute(signal) -> dict:
@@ -313,6 +324,7 @@ def execute(signal) -> dict:
             "tp": entry * (1 + config.TAKE_PROFIT_PCT / 100),
             "sl": entry * (1 - config.STOP_LOSS_PCT / 100),
             "mode": mode(), "ts": datetime.now(timezone.utc).isoformat(),
+            "peak": entry, "partial": 0,
         }
         _positions[symbol] = pos
         store.save_position(symbol, pos)
@@ -326,8 +338,36 @@ def execute(signal) -> dict:
                 "mode": mode(), "order_id": str(order.get("id", ""))}
 
 
+def manage(pos: dict, price: float) -> tuple[str | None, dict]:
+    """Bitta pozitsiya uchun qaror: (harakat, yangilangan pozitsiya).
+
+    harakat: None | "partial" (TP1 — qisman foyda) | "TP" | "SL" | "Trailing SL" | "Breakeven"
+      * narx eng yuqori nuqtasi (peak) kuzatiladi;
+      * +PARTIAL_TP_PCT da PARTIAL_TP_SHARE qismi sotiladi, stop kirish narxiga ko'chadi (zararsiz);
+      * +TRAIL_ACTIVATE_PCT dan keyin stop narx ortidan TRAILING_STOP_PCT masofada ergashadi.
+    """
+    pos = dict(pos)
+    entry = float(pos["entry"])
+    pos["peak"] = max(float(pos.get("peak") or entry), price)
+    moved = None
+    if config.TRAILING_STOP_PCT > 0 and pos["peak"] >= entry * (1 + config.TRAIL_ACTIVATE_PCT / 100):
+        trail = pos["peak"] * (1 - config.TRAILING_STOP_PCT / 100)
+        if trail > pos["sl"]:
+            pos["sl"], moved = trail, "Trailing SL"
+    if price >= pos["tp"]:
+        return "TP", pos
+    if price <= pos["sl"]:
+        if moved == "Trailing SL" or pos["sl"] > entry * 1.0005:
+            return ("Trailing SL" if pos["sl"] > entry * 1.003 else "Breakeven"), pos
+        return "SL", pos
+    if (not pos.get("partial") and config.PARTIAL_TP_SHARE > 0
+            and price >= entry * (1 + config.PARTIAL_TP_PCT / 100)):
+        return "partial", pos
+    return None, pos
+
+
 def check_tp_sl(price_fn) -> list[dict]:
-    """Ochiq pozitsiyalarda TP/SL ga yetganini tekshirib, kerak bo'lsa yopadi."""
+    """Ochiq pozitsiyalarni boshqaradi: qisman foyda, trailing stop, TP/SL."""
     load_state()
     closed = []
     with _lock:
@@ -335,12 +375,23 @@ def check_tp_sl(price_fn) -> list[dict]:
             price = price_fn(symbol)
             if price is None:
                 continue
-            hit = "TP" if price >= pos["tp"] else ("SL" if price <= pos["sl"] else None)
-            if not hit:
-                continue
+            action, new = manage(pos, price)
             try:
-                res = _close(symbol, pos, price, f"{hit} hit")
-                closed.append({**res, "reason": hit})
+                if action == "partial":
+                    res = _close(symbol, new, price, f"TP1: {config.PARTIAL_TP_SHARE * 100:.0f}% sotildi",
+                                 share=config.PARTIAL_TP_SHARE)
+                    p = _positions.get(symbol)
+                    if p:   # qolgan qism uchun stop — kirish narxi (zararsiz)
+                        p["sl"] = max(p["sl"], float(p["entry"]) * 1.002)
+                        store.save_position(symbol, p)
+                    closed.append({**res, "reason": f"TP1 +{config.PARTIAL_TP_PCT:g}% "
+                                                    f"({config.PARTIAL_TP_SHARE * 100:.0f}% sotildi, stop zararsiz nuqtada)"})
+                elif action:
+                    res = _close(symbol, new, price, f"{action} hit")
+                    closed.append({**res, "reason": action})
+                elif new["peak"] != pos.get("peak") or new["sl"] != pos["sl"]:
+                    _positions[symbol] = new
+                    store.save_position(symbol, new)
             except Exception as e:  # noqa: BLE001
-                log.error("TP/SL yopishda xato %s: %s", symbol, e)
+                log.error("Pozitsiyani boshqarishda xato %s: %s", symbol, e)
     return closed

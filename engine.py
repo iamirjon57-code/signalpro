@@ -7,6 +7,7 @@ import logging
 import config
 import data
 import ai
+import econ
 import market
 import signals
 import store
@@ -18,6 +19,19 @@ log = logging.getLogger("engine")
 notifier = None
 last_scan: list[dict] = []
 _cycle = 0
+
+
+direct = None   # telegram_bot o'rnatadi: async (chat_id, text)
+
+
+async def send_to(chat_id, text: str):
+    """Bitta foydalanuvchiga xabar (narx ogohlantirishi va h.k.)."""
+    if direct is None:
+        return
+    try:
+        await direct(chat_id, text)
+    except Exception as e:  # noqa: BLE001
+        log.warning("send_to(%s) xato: %s", chat_id, e)
 
 
 async def broadcast(text: str):
@@ -65,7 +79,8 @@ async def scan_once(force_notify: bool = False, full: bool = False) -> list[sign
         msg = sig.text()
         block = None
         if config.AUTO_TRADE and sig.kind == "crypto" and sig.action == "BUY":
-            block = await asyncio.to_thread(market.buy_block_reason, sig.symbol)
+            block = (await asyncio.to_thread(econ.pause_reason)
+                     or await asyncio.to_thread(market.buy_block_reason, sig.symbol))
             if block:
                 msg += f"\n\n⏸ Avto-savdo o'tkazilmadi: {block}"
             elif ai.enabled() and config.AI_TRADE_FILTER:
@@ -106,8 +121,9 @@ async def tp_sl_loop():
             if trader.positions():
                 closed = await asyncio.to_thread(trader.check_tp_sl, data.last_price)
                 for c in closed:
+                    head = "💰 Qisman foyda olindi" if c.get("partial") else "📌 Pozitsiya yopildi"
                     await broadcast(
-                        f"📌 Pozitsiya yopildi: `{c['symbol']}` ({c['reason']}) "
+                        f"{head}: `{c['symbol']}` ({c['reason']}) "
                         f"narx `{c['price']:g}`, PnL `{c['pnl']:+.2f}` USDT"
                     )
         except Exception as ex:  # noqa: BLE001

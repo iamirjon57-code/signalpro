@@ -17,6 +17,10 @@ import data
 import dex
 import engine
 import ai
+import alerts
+import econ
+import flows
+import perf
 import market
 import research
 import investors
@@ -53,6 +57,12 @@ HELP = """*Signal Pro* — savdo signallari boti
 /global — global kripto va DEX bozori (DefiLlama, CoinGecko, GeckoTerminal)
 /ideas — AI investitsiya g'oyalari
 /report — kunlik hisobot (hozir)
+/stats — signallar statistikasi (necha foizi to'g'ri chiqdi)
+/calendar — iqtisodiy taqvim (Fed, inflyatsiya, NFP)
+/whales — kitlar va futures (long/short, ochiq pozitsiyalar)
+/alert `BTC 90000` — narx ogohlantirishi
+/port `BTC 0.05 60000` — portfelga qo'shish · /port — portfel
+/google `savol` — Gemini Google qidiruvi bilan javob
 /dex `NOM yoki MANZIL` — DexScreener'dan tangani tekshirish (firibgarlik filtri bilan)
 /stop — signallarni to'xtatish
 /start — obuna bo'lish"""
@@ -70,9 +80,14 @@ B_MARKET = "🌡 Bozor holati"
 B_AI = "🤖 AI maslahatchi"
 B_GLOBAL, B_IDEAS = "🌍 Global bozor", "💡 Investitsiya g'oyalari"
 
+B_STATS, B_CAL = "📈 Statistika", "📅 Iqtisodiy taqvim"
+B_WHALE, B_ALERT = "🐋 Kitlar va futures", "🔔 Narx ogohlantirish"
+B_PORT = "🗂 Portfel"
+
 MENU = ReplyKeyboardMarkup(
-    [[B_SIGNAL, B_SCAN], [B_TOP, B_NEWS], [B_POS, B_TRADES], [B_BAL, B_MODE],
-     [B_DEX, B_MARKET], [B_GLOBAL, B_IDEAS], [B_AI, B_INV], [B_HELP]],
+    [[B_SIGNAL, B_SCAN], [B_TOP, B_STATS], [B_NEWS, B_CAL], [B_GLOBAL, B_IDEAS],
+     [B_DEX, B_MARKET], [B_WHALE, B_ALERT], [B_PORT, B_AI], [B_POS, B_TRADES],
+     [B_BAL, B_MODE], [B_INV, B_HELP]],
     resize_keyboard=True,
 )
 
@@ -179,6 +194,24 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("🤖 Qaysi aktivni AI tahlil qilsin?", reply_markup=symbol_picker("ai"))
     elif d.startswith("ai:"):
         await _ai_analyze(q.message, d[3:], update)
+    elif d.startswith("stats:"):
+        text = await asyncio.to_thread(perf.summary_text, int(d[6:]))
+        kb = q.message.reply_markup if hasattr(q.message, "reply_markup") else None
+        await _say(q.message, text, kb, edit=True)
+    elif d.startswith("adel:"):
+        ok = await asyncio.to_thread(alerts.delete_alert, update.effective_chat.id, int(d[5:]))
+        await q.message.reply_text("🗑 Ogohlantirish o'chirildi." if ok else "Topilmadi.",
+                                   reply_markup=_alerts_kb(update.effective_chat.id))
+    elif d == "alert:add":
+        _await(ctx, "alert")
+        await q.message.reply_text("Aktiv va narxni yozing, masalan: BTC 90000")
+    elif d == "port:add":
+        _await(ctx, "port")
+        await q.message.reply_text("Aktiv, miqdor va o'rtacha xarid narxini yozing, masalan:\nBTC 0.05 60000\nAAPL 10 180")
+    elif d == "port:show":
+        await _show_port(q.message, update.effective_chat.id, edit=True)
+    elif d == "port:ai":
+        await _port_ai(q.message, update.effective_chat.id, update)
     elif d.startswith("gnews:"):
         await _send_digest(q.message, d[6:])
     elif d == "ideas":
@@ -590,6 +623,7 @@ AI_SETUP = ("🤖 AI hali ulanmagan.\n\n"
             "1) console.anthropic.com saytida API kalit oling (Billing'da kredit bo'lishi kerak — "
             "Claude Pro obunasi API'ni o'z ichiga olmaydi)\n"
             "2) Railway → web → Variables → ANTHROPIC_API_KEY = kalitingiz\n"
+            "Yoki/va Google Gemini: aistudio.google.com → Get API key → GEMINI_API_KEY\n"
             "Bot o'zi qayta ishga tushadi va AI yoqiladi.\n\n"
             "⚠️ Kalitni hech kimga (chatga ham) yubormang.")
 
@@ -648,6 +682,168 @@ async def cmd_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _ai_ask(update, arg)
 
 
+# ---------------- Statistika, taqvim, kitlar ----------------
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    m = await update.effective_message.reply_text("⏳ Signallar natijalari hisoblanmoqda...")
+    try:
+        await asyncio.to_thread(perf.evaluate_pending)
+        text = await asyncio.to_thread(perf.summary_text, 30)
+    except Exception as e:  # noqa: BLE001
+        text = f"❌ Statistika xatosi: {e}"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("7 kun", callback_data="stats:7"),
+                                InlineKeyboardButton("30 kun", callback_data="stats:30"),
+                                InlineKeyboardButton("90 kun", callback_data="stats:90")]])
+    await _say(m, text, kb, edit=True)
+
+
+async def cmd_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    m = await update.effective_message.reply_text("⏳ Iqtisodiy taqvim yuklanmoqda...")
+    text = await asyncio.to_thread(econ.week_text)
+    pause = await asyncio.to_thread(econ.pause_reason)
+    if pause:
+        text = f"⏸ *Hozir avto-savdo pauzada:* {pause}\n\n" + text
+    await _say(m, text, edit=True)
+
+
+async def cmd_whales(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    m = await update.effective_message.reply_text("⏳ Kitlar va futures ma'lumotlari yuklanmoqda (Binance)...")
+    if ctx.args:
+        sym = alerts.norm_symbol(ctx.args[0])
+        await asyncio.to_thread(flows.collect, sym)
+        text = await asyncio.to_thread(flows.symbol_text, sym)
+    else:
+        text = await asyncio.to_thread(flows.overview_text)
+    await _say(m, text, edit=True)
+
+
+# ---------------- Narx ogohlantirishlari ----------------
+
+def _await(ctx, what: str | None):
+    ud = getattr(ctx, "user_data", None)
+    if ud is not None:
+        if what:
+            ud["await"] = what
+        else:
+            ud.pop("await", None)
+
+
+def _alerts_kb(chat_id) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"❌ {a['symbol']} {'≥' if a['op'] == '>=' else '≤'} {a['price']:g}",
+                                  callback_data=f"adel:{a['id']}")] for a in alerts.list_alerts(chat_id)[:15]]
+    rows.append([InlineKeyboardButton("➕ Yangi ogohlantirish", callback_data="alert:add")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _add_alert(message, chat_id, text: str) -> bool:
+    parsed = alerts.parse_alert(text)
+    if not parsed:
+        return False
+    sym, price = parsed
+    try:
+        a = await asyncio.to_thread(alerts.add_alert, chat_id, sym, price)
+    except Exception as e:  # noqa: BLE001
+        await message.reply_text(f"❌ {e}")
+        return True
+    arrow = "ko'tarilib" if a["op"] == ">=" else "tushib"
+    await message.reply_text(f"🔔 Tayyor! `{sym}` narxi {arrow} `{price:g}` ga yetganda xabar beraman.\n"
+                             f"Hozirgi narx: `{a['current']:g}`", parse_mode=ParseMode.MARKDOWN,
+                             reply_markup=_alerts_kb(chat_id))
+    return True
+
+
+async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, chat_id = update.effective_message, update.effective_chat.id
+    if ctx.args:
+        if not await _add_alert(msg, chat_id, " ".join(ctx.args)):
+            await msg.reply_text("Format: /alert BTC 90000  (yoki ETH 3.5k)")
+        return
+    _await(ctx, "alert")
+    n = len(alerts.list_alerts(chat_id))
+    await msg.reply_text(
+        "🔔 *Narx ogohlantirishi*\n\nAktiv va narxni yozing, masalan:\n`BTC 90000`\n`ETH 3.5k`\n`SOL 150`\n`AAPL 250`\n\n"
+        "Narx hozirgidan yuqori bo'lsa — ko'tarilganda, past bo'lsa — tushganda xabar keladi."
+        + (f"\n\nSizda {n} ta faol ogohlantirish bor (o'chirish uchun bosing):" if n else ""),
+        parse_mode=ParseMode.MARKDOWN, reply_markup=_alerts_kb(chat_id) if n else None)
+
+
+# ---------------- Portfel ----------------
+
+def _port_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("➕ Aktiv qo'shish", callback_data="port:add"),
+                                  InlineKeyboardButton("🔄 Yangilash", callback_data="port:show")],
+                                 [InlineKeyboardButton("🤖 AI portfel tahlili", callback_data="port:ai")]])
+
+
+async def _show_port(message, chat_id, edit: bool = False):
+    text = await asyncio.to_thread(alerts.portfolio_text, chat_id)
+    await _say(message, text, _port_kb(), edit=edit)
+
+
+async def cmd_port(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, chat_id = update.effective_message, update.effective_chat.id
+    args = ctx.args or []
+    if args and args[0].lower() in ("del", "o'chir", "ochir", "remove") and len(args) > 1:
+        sym = alerts.norm_symbol(args[1])
+        ok = await asyncio.to_thread(alerts.remove_holding, chat_id, sym)
+        await msg.reply_text(f"{'🗑 O‘chirildi' if ok else 'Topilmadi'}: {sym}")
+        return
+    if args:
+        await _add_holding(msg, chat_id, " ".join(args))
+        return
+    m = await msg.reply_text("⏳ Portfel hisoblanmoqda...")
+    await _show_port(m, chat_id, edit=True)
+
+
+async def _add_holding(message, chat_id, text: str) -> bool:
+    parsed = alerts.parse_holding(text)
+    if not parsed:
+        await message.reply_text("Format: `BTC 0.05 60000` (aktiv, miqdor, o'rtacha narx) yoki `AAPL 10`",
+                                 parse_mode=ParseMode.MARKDOWN)
+        return False
+    sym, amt, price = parsed
+    try:
+        h = await asyncio.to_thread(alerts.add_holding, chat_id, sym, amt, price)
+    except Exception as e:  # noqa: BLE001
+        await message.reply_text(f"❌ {e}")
+        return True
+    await message.reply_text(f"✅ Portfelga qo'shildi: {sym} — jami {h['amount']:g}, o'rtacha narx {h['avg']:g}")
+    m = await message.reply_text("⏳ Portfel hisoblanmoqda...")
+    await _show_port(m, chat_id, edit=True)
+    return True
+
+
+async def _port_ai(message, chat_id, update: Update):
+    if not await _ai_allowed(update):
+        return
+    m = await message.reply_text("🤖 AI portfelingizni tahlil qilmoqda (30-60 soniya)...")
+    try:
+        text = await asyncio.to_thread(ai.portfolio_review, chat_id)
+        await m.edit_text(f"🤖 Portfel tahlili\n\n{text}\n\nℹ️ Bu moliyaviy maslahat emas."[:4000])
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ AI xatosi: {e}")
+
+
+async def cmd_google(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = " ".join(ctx.args or []).strip()
+    if not ai.gemini_enabled():
+        await update.effective_message.reply_text(
+            "🔎 Gemini ulanmagan.\naistudio.google.com → Get API key → Railway Variables'ga GEMINI_API_KEY qo'shing.")
+        return
+    if config.AI_ADMIN_ONLY and not _admin(update):
+        await update.effective_message.reply_text("🔒 Faqat bot egasi uchun.")
+        return
+    if not q:
+        await update.effective_message.reply_text("Format: /google Bugun bitcoin nega tushdi?")
+        return
+    m = await update.effective_message.reply_text("🔎 Google'da qidirilmoqda (Gemini)...")
+    try:
+        text = await asyncio.to_thread(ai.gemini, q, 900, ai.SYSTEM, True)
+        await m.edit_text(f"🔎 Gemini + Google\n\n{text}"[:4000], disable_web_page_preview=True)
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ {e}")
+
+
 _SYMBOL_RE = re.compile(r"^[A-Za-z0-9]{2,10}(/[A-Za-z]{3,5})?$")
 
 
@@ -658,12 +854,22 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         B_SIGNAL: cmd_signal, B_SCAN: cmd_scan, B_TOP: cmd_top, B_NEWS: cmd_news,
         B_POS: cmd_positions, B_TRADES: cmd_trades, B_BAL: cmd_balance, B_MODE: cmd_mode,
         B_INV: cmd_investors, B_HELP: cmd_help, B_DEX: cmd_dex, B_MARKET: cmd_market, B_AI: cmd_ai,
-        B_GLOBAL: cmd_global, B_IDEAS: cmd_ideas,
+        B_GLOBAL: cmd_global, B_IDEAS: cmd_ideas, B_STATS: cmd_stats, B_CAL: cmd_calendar,
+        B_WHALE: cmd_whales, B_ALERT: cmd_alert, B_PORT: cmd_port,
     }
     fn = routes.get(text)
+    ud = getattr(ctx, "user_data", None) or {}
+    waiting = ud.get("await")
     if fn:
+        _await(ctx, None)
         ctx.args = []
         await fn(update, ctx)
+    elif waiting == "alert" and alerts.parse_alert(text):
+        _await(ctx, None)
+        await _add_alert(update.message, update.effective_chat.id, text)
+    elif waiting == "port" and alerts.parse_holding(text):
+        _await(ctx, None)
+        await _add_holding(update.message, update.effective_chat.id, text)
     elif dex.is_address(text):
         ctx.args = [text]
         await cmd_dex(update, ctx)
@@ -685,6 +891,8 @@ def build_app() -> Application:
         "balance": cmd_balance, "positions": cmd_positions, "trades": cmd_trades,
         "mode": cmd_mode, "dex": cmd_dex, "market": cmd_market, "ai": cmd_ai,
         "global": cmd_global, "ideas": cmd_ideas, "report": cmd_report,
+        "stats": cmd_stats, "calendar": cmd_calendar, "whales": cmd_whales, "alert": cmd_alert,
+        "alerts": cmd_alert, "port": cmd_port, "portfolio": cmd_port, "google": cmd_google,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
@@ -709,6 +917,14 @@ def build_app() -> Application:
 
     engine.notifier = _notify
 
+    async def _direct(chat_id, text: str):
+        try:
+            await app.bot.send_message(chat_id, text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+        except BadRequest:
+            await app.bot.send_message(chat_id, text.replace("*", "").replace("`", ""), disable_web_page_preview=True)
+
+    engine.direct = _direct
+
     async def _post_init(a: Application):
         await a.bot.set_my_commands([
             BotCommand("signal", "Bitta aktivni tahlil qilish"),
@@ -725,6 +941,12 @@ def build_app() -> Application:
             BotCommand("positions", "Ochiq pozitsiyalar"),
             BotCommand("balance", "Birja balansi"),
             BotCommand("mode", "Avto-savdo rejimi"),
+            BotCommand("stats", "Signallar statistikasi"),
+            BotCommand("calendar", "Iqtisodiy taqvim"),
+            BotCommand("whales", "Kitlar va futures"),
+            BotCommand("alert", "Narx ogohlantirishi"),
+            BotCommand("port", "Investitsiya portfeli"),
+            BotCommand("google", "Google qidiruvi bilan savol (Gemini)"),
             BotCommand("help", "Yordam"),
         ])
 

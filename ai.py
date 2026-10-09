@@ -30,23 +30,43 @@ _last_error = ""
 _usage = {"calls": 0, "in": 0, "out": 0}
 
 
-def enabled() -> bool:
+def claude_enabled() -> bool:
     return bool(config.ANTHROPIC_API_KEY)
+
+
+def gemini_enabled() -> bool:
+    return bool(config.GEMINI_API_KEY)
+
+
+def enabled() -> bool:
+    return claude_enabled() or gemini_enabled()
 
 
 def status() -> str:
     if not enabled():
-        return "o'chiq (ANTHROPIC_API_KEY yo'q)"
-    s = f"yoqilgan · model {config.AI_MODEL} · {_usage['calls']} so'rov"
+        return "o'chiq (ANTHROPIC_API_KEY yoki GEMINI_API_KEY yo'q)"
+    parts = []
+    if claude_enabled():
+        parts.append(f"Claude ({config.AI_MODEL}) · {_usage['calls']} so'rov")
+    if gemini_enabled():
+        parts.append(f"Gemini + Google qidiruv ({config.GEMINI_MODEL}) · {_gusage['calls']} so'rov")
+    s = " | ".join(parts)
     if _last_error:
         s += f" · oxirgi xato: {_last_error[:80]}"
     return s
 
 
-def _call(prompt: str, max_tokens: int = 700, system: str = SYSTEM) -> str:
+def _call(prompt: str, max_tokens: int = 700, system: str = SYSTEM, search: bool = False) -> str:
+    """Asosiy AI: Claude; u yo'q bo'lsa — Gemini."""
+    if not claude_enabled():
+        if gemini_enabled():
+            return gemini(prompt, max_tokens, system, search=search)
+        raise RuntimeError("AI ulanmagan: Railway Variables'ga ANTHROPIC_API_KEY yoki GEMINI_API_KEY qo'shing")
+    return _claude(prompt, max_tokens, system)
+
+
+def _claude(prompt: str, max_tokens: int = 700, system: str = SYSTEM) -> str:
     global _last_error
-    if not enabled():
-        raise RuntimeError("AI ulanmagan: Railway Variables'ga ANTHROPIC_API_KEY qo'shing")
     headers = {"x-api-key": config.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
                "content-type": "application/json"}
     model = config.AI_MODEL
@@ -88,6 +108,111 @@ def _call(prompt: str, max_tokens: int = 700, system: str = SYSTEM) -> str:
             raise RuntimeError("Claude API hisobida kredit tugagan — console.anthropic.com → Billing")
         raise RuntimeError(f"AI xatosi {r.status_code}: {err}")
     raise RuntimeError(f"AI javob bermadi: {_last_error}")
+
+
+# ---------------- Gemini (Google) ----------------
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_FALLBACK = "gemini-flash-latest"
+_gusage = {"calls": 0}
+_web_cache: dict[str, tuple[float, str]] = {}
+
+
+def gemini(prompt: str, max_tokens: int = 800, system: str = SYSTEM, search: bool = False) -> str:
+    """Gemini; search=True — Google qidiruvi bilan (jonli internet ma'lumotlari)."""
+    global _last_error
+    if not gemini_enabled():
+        raise RuntimeError("GEMINI_API_KEY yo'q")
+    model = config.GEMINI_MODEL
+    body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "systemInstruction": {"parts": [{"text": system}]},
+            "generationConfig": {"maxOutputTokens": max(max_tokens, 256) * 4, "temperature": 0.4}}
+    if search:
+        body["tools"] = [{"google_search": {}}]
+    headers = {"x-goog-api-key": config.GEMINI_API_KEY, "content-type": "application/json"}
+    for attempt in range(3):
+        try:
+            r = requests.post(GEMINI_URL.format(model=model), headers=headers, json=body, timeout=90)
+        except requests.RequestException as e:
+            _last_error = f"Gemini: {e}"
+            if attempt < 2:
+                time.sleep(2)
+                continue
+            raise RuntimeError(f"Gemini bilan aloqa yo'q: {e}") from e
+        if r.status_code == 200:
+            j = r.json()
+            _gusage["calls"] += 1
+            cand = (j.get("candidates") or [{}])[0]
+            text = "".join(p.get("text", "") for p in (cand.get("content") or {}).get("parts") or []).strip()
+            if not text:
+                raise RuntimeError(f"Gemini bo'sh javob qaytardi ({cand.get('finishReason', '?')})")
+            config.GEMINI_MODEL = model
+            return text
+        try:
+            err = (r.json().get("error") or {}).get("message", r.text[:200])
+        except ValueError:
+            err = r.text[:200]
+        _last_error = f"Gemini {r.status_code}: {err}"
+        if r.status_code == 404 and model != GEMINI_FALLBACK:
+            model = GEMINI_FALLBACK
+            continue
+        if r.status_code in (429, 500, 503) and attempt < 2:
+            time.sleep(4 * (attempt + 1))
+            continue
+        if r.status_code in (400, 403) and "key" in err.lower():
+            raise RuntimeError("Gemini kaliti noto'g'ri — GEMINI_API_KEY ni tekshiring")
+        if r.status_code == 429:
+            raise RuntimeError("Gemini bepul limiti tugadi — birozdan keyin urinib ko'ring")
+        raise RuntimeError(f"Gemini xatosi {r.status_code}: {err}")
+    raise RuntimeError(f"Gemini javob bermadi: {_last_error}")
+
+
+def web_research(query: str, ttl: int = 1800) -> str:
+    """Google qidiruvi orqali jonli ma'lumot (Gemini). Gemini yo'q bo'lsa — bo'sh."""
+    if not gemini_enabled():
+        return ""
+    hit = _web_cache.get(query)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    try:
+        txt = gemini(f"Google'da qidirib, quyidagi mavzu bo'yicha ENG SO'NGGI (oxirgi 24-48 soat) faktlarni "
+                     f"qisqa yoz (8-10 qator, raqamlar va sanalar bilan, manba nomi bilan): {query}",
+                     700, "Sen moliyaviy tadqiqotchisan. Faqat tekshirilgan faktlar, taxmin yo'q. O'zbekcha yoz.",
+                     search=True)
+    except Exception as e:  # noqa: BLE001
+        log.info("web_research: %s", e)
+        return ""
+    _web_cache[query] = (time.time(), txt)
+    return txt
+
+
+def _web_block(query: str) -> str:
+    if not (gemini_enabled() and claude_enabled()):
+        return ""
+    w = web_research(query)
+    return f"\n\nGOOGLE QIDIRUV (Gemini, jonli ma'lumot):\n{w}" if w else ""
+
+
+def _extra_context(symbol: str | None = None) -> str:
+    """Iqtisodiy taqvim, signallar statistikasi, futures/kitlar."""
+    parts = []
+    try:
+        import econ
+        parts.append("IQTISODIY TAQVIM (48s): " + econ.upcoming_context())
+    except Exception as e:  # noqa: BLE001
+        log.info("econ ctx: %s", e)
+    try:
+        import perf
+        parts.append("BOT SIGNALLARI STATISTIKASI: " + perf.context_text())
+    except Exception as e:  # noqa: BLE001
+        log.info("perf ctx: %s", e)
+    if symbol and "/" in symbol:
+        try:
+            import flows
+            parts.append("FUTURES/KITLAR: " + flows.context(symbol))
+        except Exception as e:  # noqa: BLE001
+            log.info("flows ctx: %s", e)
+    return "\n".join(parts)
 
 
 # ---------------- Kontekst ----------------
@@ -136,13 +261,14 @@ def analyze_signal(sig) -> str:
         f"TEXNIK TAHLIL:\n{_signal_context(sig)}\n\n"
         f"BOZOR HOLATI:\n{_market_context(sig.symbol)}\n\n"
         f"SO'NGGI YANGILIKLAR:\n{_news_context(sig.symbol)}\n\n"
+        f"{_extra_context(sig.symbol)}{_web_block(sig.symbol.split('/')[0] + ' narxi va yangiliklari')}\n\n"
         "Javob tuzilishi (har biri 1-3 qisqa gap):\n"
         "🧠 Xulosa: SOTIB OLISH / SOTISH / KUTISH — va nega\n"
         "📊 Texnik holat\n📰 Yangiliklar ta'siri\n⚠️ Asosiy xavflar\n"
         "🎯 Reja: kirish narxi, stop-loss, take-profit (raqamlar bilan)\n"
         "Ishonch darajasi: past / o'rta / yuqori"
     )
-    return _call(prompt, 800)
+    return _call(prompt, 800, search=True)
 
 
 def review_trade(sig) -> tuple[bool, str]:
@@ -153,9 +279,13 @@ def review_trade(sig) -> tuple[bool, str]:
         "qizigan bozor) rad et; oddiy holatda ruxsat ber.\n\n"
         f"SAVDO: {sig.action} {sig.symbol}\n{_signal_context(sig)}\n\n"
         f"BOZOR:\n{_market_context(sig.symbol)}\n\nYANGILIKLAR:\n{_news_context(sig.symbol, 5)}\n\n"
+        f"{_extra_context(sig.symbol)}\n\n"
         'Faqat JSON qaytar: {"approve": true yoki false, "reason": "o\'zbekcha, 1 gap"}'
     )
-    out = _call(prompt, 200, system=SYSTEM + " Faqat so'ralgan JSON formatida javob ber.")
+    return _review(prompt)
+
+
+def _parse_review(out: str) -> tuple[bool, str]:
     m = re.search(r"\{.*\}", out, re.S)
     if not m:
         raise RuntimeError(f"AI javobi tushunarsiz: {out[:100]}")
@@ -163,13 +293,37 @@ def review_trade(sig) -> tuple[bool, str]:
     return bool(j.get("approve")), str(j.get("reason") or "").strip()[:300]
 
 
+def _review(prompt: str) -> tuple[bool, str]:
+    """Bitta yoki ikkita AI (Claude + Gemini Google qidiruv bilan) tekshiruvi.
+
+    AI_DUAL_CHECK=true va ikkala kalit bo'lsa — ikkalasi ham ruxsat bersagina savdo ochiladi.
+    Gemini ishlamay qolsa — Claude qarori bilan davom etiladi.
+    """
+    sysj = SYSTEM + " Faqat so'ralgan JSON formatida javob ber."
+    ok, why = _parse_review(_call(prompt, 200, system=sysj, search=True))
+    if not (config.AI_DUAL_CHECK and claude_enabled() and gemini_enabled()):
+        return ok, why
+    try:
+        g_ok, g_why = _parse_review(gemini(
+            prompt + "\n\nGoogle'da shu aktiv bo'yicha oxirgi 24 soat yangiliklarini ham tekshir.",
+            300, sysj, search=True))
+    except Exception as e:  # noqa: BLE001
+        log.info("Gemini tekshiruvi: %s", e)
+        return ok, why
+    if ok and g_ok:
+        return True, f"Claude: {why} | Gemini: {g_why}"
+    if not ok:
+        return False, f"Claude: {why}"
+    return False, f"Gemini (Google): {g_why}"
+
+
 def ask(question: str) -> str:
     """Erkin savol (bozor, aktiv, strategiya haqida)."""
     ctx = _market_context()
     prompt = (f"Hozirgi bozor holati:\n{ctx}\n\nKuzatuvdagi aktivlar: "
               f"{', '.join(config.CRYPTO_SYMBOLS + config.STOCK_SYMBOLS + config.FOREX_SYMBOLS)}\n\n"
-              f"Foydalanuvchi savoli: {question[:1500]}")
-    return _call(prompt, 800)
+              f"Foydalanuvchi savoli: {question[:1500]}{_web_block(question[:300])}")
+    return _call(prompt, 900, search=True)
 
 
 # ---------------- DEX (DexScreener tangalari) ----------------
@@ -207,7 +361,7 @@ def analyze_dex(t: dict) -> str:
         "DEX'dagi (memecoin bo'lishi mumkin) tangani tahlil qil. Firibgarlik (rug pull, honeypot, "
         "pump-and-dump) belgilariga alohida e'tibor ber.\n\n"
         f"MA'LUMOTLAR:\n{_dex_context(t)}\n\nYANGILIKLAR:\n{news_txt}\n\n"
-        f"BOZOR:\n{_market_context()}\n\n"
+        f"BOZOR:\n{_market_context()}{_web_block(t['symbol'] + ' ' + t['name'] + ' token ' + t['chain'] + ' scam rug yangiliklar')}\n\n"
         "Javob tuzilishi (har biri 1-3 qisqa gap):\n"
         "🧠 Xulosa: OLISH MUMKIN / KUTISH / UZOQ TURING — va nega\n"
         "🛡 Firibgarlik xavfi: past / o'rta / yuqori — sabablari\n"
@@ -227,12 +381,7 @@ def review_dex(t: dict) -> tuple[bool, str]:
         f"{_dex_context(t)}\n\n"
         'Faqat JSON qaytar: {"approve": true yoki false, "reason": "o\'zbekcha, 1 gap"}'
     )
-    out = _call(prompt, 200, system=SYSTEM + " Faqat so'ralgan JSON formatida javob ber.")
-    m = re.search(r"\{.*\}", out, re.S)
-    if not m:
-        raise RuntimeError(f"AI javobi tushunarsiz: {out[:100]}")
-    j = json.loads(m.group(0))
-    return bool(j.get("approve")), str(j.get("reason") or "").strip()[:300]
+    return _review(prompt)
 
 
 # ---------------- Global yangiliklar va investitsiya ----------------
@@ -295,6 +444,7 @@ def invest_ideas() -> str:
             f"GLOBAL KRIPTO/DEX:\n{research.global_context()}\n\n"
             f"BOTNING TEXNIK SIGNALLARI:\n{sig_txt}\n\n"
             f"SO'NGGI YANGILIKLAR:\n{_items_text(news)}\n\n"
+            f"{_extra_context('BTC/USDT')}{_web_block('bugungi kripto va aksiya bozori, eng kuchli o`sayotgan aktivlar')}\n\n"
             "Format:\n"
             "🌍 Umumiy holat — 2 gap\n"
             "⚡ Qisqa muddatli savdo g'oyalari (1-7 kun) — 2-3 ta: aktiv, yo'nalish, kirish/stop/maqsad, sabab\n"
@@ -302,7 +452,7 @@ def invest_ideas() -> str:
             "🚫 Hozir nimadan uzoq turish kerak — 1-2 ta\n"
             "Har bir g'oyaga xavf darajasi (past/o'rta/yuqori). Portfelni bo'lish va stop-loss haqida eslat."
         )
-        return _call(prompt, 1500)
+        return _call(prompt, 1500, search=True)
     return _cached_call("ideas", 3600, make)
 
 
@@ -312,11 +462,28 @@ def daily_report() -> str:
     prompt = (
         "Ertalabki investor hisobotini tayyorla (o'zbekcha, Telegram uchun, 25-35 qator).\n\n"
         f"BOZOR:\n{_market_context('BTC/USDT')}\n\nGLOBAL:\n{research.global_context()}\n\n"
-        f"YANGILIKLAR:\n{_items_text(news)}\n\n"
+        f"YANGILIKLAR:\n{_items_text(news)}\n\n{_extra_context('BTC/USDT')}\n\n"
         "Bo'limlar: 🌡 Bozor kayfiyati · 📰 Eng muhim 5 yangilik (ta'siri bilan) · 🦎 DEX/DeFi'da nima "
         "bo'lyapti · 📅 Bugun nimaga e'tibor berish kerak · 💡 Kun g'oyasi (xavfi bilan)."
     )
-    return _call(prompt, 1600)
+    return _call(prompt, 1600, search=True)
+
+
+def portfolio_review(chat_id) -> str:
+    """Foydalanuvchi portfelini AI ko'rib chiqadi."""
+    import alerts
+    port = alerts.portfolio_context(chat_id)
+    if port == "portfel bo'sh":
+        return "Portfel bo'sh — avval aktiv qo'shing: /port BTC 0.05 60000"
+    prompt = (
+        "Investorning portfelini ko'rib chiq va o'zbekcha maslahat ber.\n\n"
+        f"PORTFEL:\n{port}\n\nBOZOR:\n{_market_context('BTC/USDT')}\n\n{_extra_context()}"
+        f"{_web_block('portfeldagi aktivlar bo`yicha so`nggi yangiliklar: ' + port[:300])}\n\n"
+        "Format: 📊 Umumiy baho (diversifikatsiya, xavf darajasi) · ✅ Yaxshi tomonlari · ⚠️ Xavflar · "
+        "🔄 Nima qilish kerak (har bir aktiv bo'yicha: ushlab turish / qisman foyda olish / qo'shish / "
+        "stop qo'yish — sababi bilan) · 💡 Portfelga nima qo'shish mumkin."
+    )
+    return _call(prompt, 1300, search=True)
 
 
 def important_news(items: list[dict]) -> list[str]:

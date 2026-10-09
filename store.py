@@ -43,7 +43,8 @@ def conn() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
         # Eski bazalar uchun migratsiya
-        for table, col in (("trades", "pnl"), ("positions", "cost")):
+        for table, col in (("trades", "pnl"), ("positions", "cost"), ("positions", "peak"),
+                           ("positions", "partial")):
             cols = {r["name"] for r in _conn.execute(f"PRAGMA table_info({table})")}
             if col not in cols:
                 _conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} REAL")
@@ -152,10 +153,10 @@ def watchlist() -> list[str]:
 def save_position(symbol: str, pos: dict):
     with _lock:
         conn().execute(
-            "INSERT OR REPLACE INTO positions (symbol,amount,entry,tp,sl,mode,ts,cost) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO positions (symbol,amount,entry,tp,sl,mode,ts,cost,peak,partial) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (symbol, pos["amount"], pos["entry"], pos["tp"], pos["sl"], pos.get("mode", ""),
-             pos.get("ts", _now()), pos.get("cost")),
+             pos.get("ts", _now()), pos.get("cost"), pos.get("peak"), pos.get("partial") or 0),
         )
         conn().commit()
 
@@ -170,7 +171,8 @@ def load_positions() -> dict[str, dict]:
     rows = conn().execute("SELECT * FROM positions").fetchall()
     return {r["symbol"]: {"amount": r["amount"], "entry": r["entry"], "tp": r["tp"],
                           "sl": r["sl"], "mode": r["mode"], "ts": r["ts"],
-                          "cost": r["cost"]} for r in rows}
+                          "cost": r["cost"], "peak": r["peak"] or r["entry"],
+                          "partial": int(r["partial"] or 0)} for r in rows}
 
 
 def realized_pnl_since(day: str) -> float:

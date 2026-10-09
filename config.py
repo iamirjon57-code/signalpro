@@ -71,6 +71,12 @@ MAX_OPEN_POSITIONS = int(_f("MAX_OPEN_POSITIONS", 3))
 DAILY_LOSS_LIMIT_USDT = _f("DAILY_LOSS_LIMIT_USDT", 50.0)
 TAKE_PROFIT_PCT = _f("TAKE_PROFIT_PCT", 3.0)
 STOP_LOSS_PCT = _f("STOP_LOSS_PCT", 1.5)
+# Qisman foyda: +PARTIAL_TP_PCT da pozitsiyaning PARTIAL_TP_SHARE qismi sotiladi (0 = o'chiq)
+PARTIAL_TP_PCT = _f("PARTIAL_TP_PCT", 1.8)
+PARTIAL_TP_SHARE = _f("PARTIAL_TP_SHARE", 0.5)
+# Trailing stop: +TRAIL_ACTIVATE_PCT dan keyin stop narx ortidan TRAILING_STOP_PCT masofada yuradi (0 = o'chiq)
+TRAIL_ACTIVATE_PCT = _f("TRAIL_ACTIVATE_PCT", 1.8)
+TRAILING_STOP_PCT = _f("TRAILING_STOP_PCT", 1.0)
 
 # --- Bozor ma'lumotlari ---
 TWELVE_DATA_KEY = _env("TWELVE_DATA_KEY", "")   # aksiya + forex (bepul tarif bor)
@@ -146,3 +152,29 @@ DAILY_REPORT_HOUR = int(_f("DAILY_REPORT_HOUR", 9))
 NEWS_ALERTS = _b("NEWS_ALERTS", "true")         # bozorni qimirlatadigan yangilik chiqsa — darhol xabar
 NEWS_ALERT_INTERVAL_MIN = _f("NEWS_ALERT_INTERVAL_MIN", 60)
 NEWS_ALERT_MAX = int(_f("NEWS_ALERT_MAX", 2))
+
+# --- Signallar statistikasi ---
+PERF_EVAL_HOURS = _f("PERF_EVAL_HOURS", 24)      # signal natijasi necha soat ichida baholanadi
+PERF_DEDUP_HOURS = _f("PERF_DEDUP_HOURS", 6)     # shu oraliqdagi takroriy signal bitta sanaladi
+
+# --- Iqtisodiy taqvim ---
+ECON_CURRENCIES = [x.strip() for x in _env("ECON_CURRENCIES", "USD,All").split(",") if x.strip()]
+ECON_PAUSE = _b("ECON_PAUSE", "true")             # muhim voqea atrofida yangi xarid yo'q
+ECON_PAUSE_BEFORE_MIN = _f("ECON_PAUSE_BEFORE_MIN", 30)
+ECON_PAUSE_AFTER_MIN = _f("ECON_PAUSE_AFTER_MIN", 60)
+ECON_REMIND_MIN = _f("ECON_REMIND_MIN", 60)       # voqeadan necha daqiqa oldin eslatma (0 = yo'q)
+
+# --- Gemini (Google AI, Google qidiruv bilan) — ikkinchi AI ---
+GEMINI_API_KEY = _env("GEMINI_API_KEY", "")
+GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.5-flash")
+# Ikkala AI bo'lsa: savdo faqat Claude ham, Gemini ham ruxsat bersa ochiladi
+AI_DUAL_CHECK = _b("AI_DUAL_CHECK", "true")
+
+# --- Kitlar va futures ---
+WHALE_TRACK = _b("WHALE_TRACK", "true")
+WHALE_MIN_USD = _f("WHALE_MIN_USD", 250000)      # yirik savdo chegarasi (BTC x4, ETH x2)
+WHALE_ALERTS = _b("WHALE_ALERTS", "true")
+WHALE_ALERT_X = _f("WHALE_ALERT_X", 25)          # 15 daqiqada sof oqim chegara x shu son bo'lsa — xabar
+
+# --- Narx ogohlantirishlari ---
+MAX_ALERTS = int(_f("MAX_ALERTS", 20))
