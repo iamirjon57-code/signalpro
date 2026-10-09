@@ -624,22 +624,49 @@ def _momentum_ok(t: dict) -> bool:
     return t["chg1"] > 0 and t["chg5"] > -3 and t["buys1"] > t["sells1"] and t["chg24"] < 300
 
 
+def _can_buy(t: dict) -> bool:
+    pos = positions()
+    if any(p["address"] == t["address"] for p in pos) or len(pos) >= config.DEX_MAX_POSITIONS:
+        return False
+    if _seen_recently(t["address"], "trade", 24):
+        return False
+    today = datetime.now(timezone.utc).date().isoformat()
+    if realized_pnl(today) <= -abs(config.DEX_DAILY_LOSS_LIMIT):
+        return False
+    return paper_balance() >= config.DEX_TRADE_USDT
+
+
+def _ai_check(t: dict) -> tuple[bool, str]:
+    """AI ulangan bo'lsa — xariddan oldin so'raymiz. Rad etilgan tangani 6 soat qayta so'ramaymiz."""
+    import ai
+    if not (ai.enabled() and config.AI_TRADE_FILTER):
+        return True, ""
+    if _seen_recently(t["address"], "ai_no", 6):
+        return False, ""
+    try:
+        ok, why = ai.review_dex(t)
+    except Exception as e:  # noqa: BLE001
+        log.warning("DEX AI tekshiruvi (%s): %s", t["symbol"], e)
+        return True, "AI tekshiruvi ishlamadi — oddiy filtr bilan"
+    if not ok:
+        _mark(t["address"], "ai_no")
+        log.info("DEX: AI %s ni rad etdi — %s", t["symbol"], why)
+    return ok, why
+
+
 def try_buy(t: dict) -> str | None:
     """Filtrdan o'tgan tangani qog'ozda sotib oladi. Sotib olsa xabar matnini qaytaradi."""
     if not config.DEX_AUTO_TRADE or t["verdict"] != "ok" or not _momentum_ok(t):
         return None
+    if not _can_buy(t):
+        return None
+    ok, why = _ai_check(t)
+    if not ok:
+        return None
     with _lock:
-        pos = positions()
-        if any(p["address"] == t["address"] for p in pos) or len(pos) >= config.DEX_MAX_POSITIONS:
-            return None
-        if _seen_recently(t["address"], "trade", 24):
-            return None
-        today = datetime.now(timezone.utc).date().isoformat()
-        if realized_pnl(today) <= -abs(config.DEX_DAILY_LOSS_LIMIT):
+        if not _can_buy(t):
             return None
         usd = config.DEX_TRADE_USDT
-        if paper_balance() < usd:
-            return None
         entry = t["price"] * (1 + SLIPPAGE)
         amount = usd / entry
         tp, sl = entry * (1 + config.DEX_TP_PCT / 100), entry * (1 - config.DEX_SL_PCT / 100)
@@ -657,7 +684,12 @@ def try_buy(t: dict) -> str | None:
     return (f"🦎 *DEX qog'oz xarid*: {t['symbol']} ({t['chain']})\n"
             f"Summa: `${usd:g}` · Narx: `${entry:.10g}`\n"
             f"🎯 TP `+{config.DEX_TP_PCT:g}%` · 🛑 SL `-{config.DEX_SL_PCT:g}%` · xavfsizlik {t['score']}/100\n"
-            f"{t['url']}")
+            + (f"🧠 AI: {_clean_long(why)}\n" if why else "")
+            + f"{t['url']}")
+
+
+def _clean_long(s: str) -> str:
+    return re.sub(r"[`*_\[\]~>#|]", "", str(s or "")).strip()[:250]
 
 
 def _close(p: dict, price: float, reason: str) -> str:

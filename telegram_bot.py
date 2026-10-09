@@ -176,6 +176,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _ai_analyze(q.message, d[3:], update)
     elif d.startswith("news:"):
         await _send_news(q.message, d[5:])
+    elif d.startswith("dxai:"):
+        _, chain, address = d.split(":", 2)
+        await _dex_ai(q.message, chain, address, update)
     elif d.startswith("dx:"):
         _, chain, address = d.split(":", 2)
         await _dex_token(q.message, chain, address, edit=True)
@@ -362,8 +365,8 @@ def _dex_menu() -> InlineKeyboardMarkup:
     ])
 
 
-def _dx_button(t: dict, label: str) -> InlineKeyboardButton | None:
-    data_ = f"dx:{t['chain']}:{t['address']}"
+def _dx_button(t: dict, label: str, kind: str = "dx") -> InlineKeyboardButton | None:
+    data_ = f"{kind}:{t['chain']}:{t['address']}"
     return InlineKeyboardButton(label, callback_data=data_) if len(data_.encode()) <= 64 else None
 
 
@@ -407,7 +410,31 @@ async def _dex_show(message, t: dict, edit: bool = False):
     b = _dx_button(t, "🔄 Yangilash")
     if b:
         row.insert(0, b)
-    await _say(message, dex.report(t), InlineKeyboardMarkup([row]) if row else None, edit=edit)
+    rows = [row] if row else []
+    b = _dx_button(t, "🤖 AI tahlil", "dxai")
+    if b:
+        rows.append([b])
+    await _say(message, dex.report(t), InlineKeyboardMarkup(rows) if rows else None, edit=edit)
+
+
+async def _dex_ai(message, chain: str, address: str, update: Update):
+    if not await _ai_allowed(update):
+        return
+    m = await message.reply_text("🤖 AI tangani tahlil qilmoqda (xavfsizlik + savdo + yangiliklar)...")
+    try:
+        t = await asyncio.to_thread(dex.check_token, chain, address)
+        if not t:
+            await m.edit_text("Bu tanga bo'yicha ma'lumot topilmadi.")
+            return
+        text = await asyncio.to_thread(ai.analyze_dex, t)
+        kb = [[b] for b in [_dx_button(t, "🦎 Filtr natijasi")] if b]
+        if t.get("url"):
+            kb.append([InlineKeyboardButton("📈 DexScreener", url=t["url"])])
+        await m.edit_text(f"🤖 AI tahlil — {t['symbol']} ({t['chain']})\n\n{text}\n\n"
+                          "ℹ️ Bu moliyaviy maslahat emas. DEX tangalari juda xavfli."[:4000],
+                          reply_markup=InlineKeyboardMarkup(kb) if kb else None)
+    except Exception as e:  # noqa: BLE001
+        await m.edit_text(f"❌ AI tahlil xatosi: {e}")
 
 
 async def _dex_token(message, chain: str, address: str, edit: bool = False):

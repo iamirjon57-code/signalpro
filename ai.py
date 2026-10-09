@@ -168,3 +168,66 @@ def ask(question: str) -> str:
               f"{', '.join(config.CRYPTO_SYMBOLS + config.STOCK_SYMBOLS + config.FOREX_SYMBOLS)}\n\n"
               f"Foydalanuvchi savoli: {question[:1500]}")
     return _call(prompt, 800)
+
+
+# ---------------- DEX (DexScreener tangalari) ----------------
+
+def _money(x: float) -> str:
+    return f"${x / 1e6:.2f}M" if x >= 1e6 else f"${x / 1e3:.1f}K" if x >= 1e3 else f"${x:.0f}"
+
+
+def _dex_context(t: dict) -> str:
+    age = f"{t['age_h']:.0f} soat" if t.get("age_h") is not None else "noma'lum"
+    lines = [
+        f"Tanga: {t['symbol']} ({t['name']}), tarmoq {t['chain']}, birja {t['dex']}",
+        f"Narx ${t['price']:.10g}; o'zgarish 5daq {t['chg5']:+.1f}%, 1s {t['chg1']:+.1f}%, "
+        f"6s {t['chg6']:+.1f}%, 24s {t['chg24']:+.1f}%",
+        f"Likvidlik {_money(t['liq'])}, hajm 24s {_money(t['vol24'])}, 1s {_money(t['vol1'])}",
+        f"FDV {_money(t['fdv'])}, market cap {_money(t['mcap'])}, yoshi {age}",
+        f"Savdolar 24s: {t['buys24']} xarid / {t['sells24']} sotuv; 1s: {t['buys1']} / {t['sells1']}",
+        f"Ijtimoiy tarmoq/sayt havolalari: {t.get('socials', 0)}",
+        f"Xavfsizlik filtri: {t.get('verdict')} ({t.get('score')}/100), manba: {t.get('sec_source') or '-'}",
+        f"CoinGecko ro'yxatida: {'ha' if t.get('coingecko') else 'yo`q'}",
+    ]
+    if t.get("bad"):
+        lines.append("Jiddiy xavflar: " + "; ".join(t["bad"][:6]))
+    if t.get("warn"):
+        lines.append("Ogohlantirishlar: " + "; ".join(t["warn"][:6]))
+    return "\n".join(lines)
+
+
+def analyze_dex(t: dict) -> str:
+    """DEX tangasi bo'yicha o'zbekcha AI xulosasi (firibgarlik xavfi + savdo holati)."""
+    import investors
+    news = investors.news(f"{t['symbol']} {t['name']} crypto", 4)
+    news_txt = "\n".join(f"- {i['title'][:140]}" for i in news) or "yangilik topilmadi"
+    prompt = (
+        "DEX'dagi (memecoin bo'lishi mumkin) tangani tahlil qil. Firibgarlik (rug pull, honeypot, "
+        "pump-and-dump) belgilariga alohida e'tibor ber.\n\n"
+        f"MA'LUMOTLAR:\n{_dex_context(t)}\n\nYANGILIKLAR:\n{news_txt}\n\n"
+        f"BOZOR:\n{_market_context()}\n\n"
+        "Javob tuzilishi (har biri 1-3 qisqa gap):\n"
+        "🧠 Xulosa: OLISH MUMKIN / KUTISH / UZOQ TURING — va nega\n"
+        "🛡 Firibgarlik xavfi: past / o'rta / yuqori — sabablari\n"
+        "📊 Savdo holati (hajm, xarid/sotuv, narx harakati)\n"
+        "⚠️ Asosiy xavflar\n"
+        "🎯 Agar olinsa: qancha qism (kichik!), stop-loss va foyda olish darajalari (%)"
+    )
+    return _call(prompt, 800)
+
+
+def review_dex(t: dict) -> tuple[bool, str]:
+    """DEX qog'oz avto-xariddan oldin AI tekshiruvi."""
+    prompt = (
+        "Avtomatik bot quyidagi DEX tangasini kichik summaga sotib olmoqchi (tanga xavfsizlik "
+        "filtridan o'tgan). Sen xavf nazoratchisisan: pump-and-dump, sun'iy hajm, sotuvchilar ko'payishi, "
+        "haddan tashqari tez o'sish yoki boshqa jiddiy xavf bo'lsa rad et; aks holda ruxsat ber.\n\n"
+        f"{_dex_context(t)}\n\n"
+        'Faqat JSON qaytar: {"approve": true yoki false, "reason": "o\'zbekcha, 1 gap"}'
+    )
+    out = _call(prompt, 200, system=SYSTEM + " Faqat so'ralgan JSON formatida javob ber.")
+    m = re.search(r"\{.*\}", out, re.S)
+    if not m:
+        raise RuntimeError(f"AI javobi tushunarsiz: {out[:100]}")
+    j = json.loads(m.group(0))
+    return bool(j.get("approve")), str(j.get("reason") or "").strip()[:300]
