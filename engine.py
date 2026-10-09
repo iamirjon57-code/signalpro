@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 
 import config
@@ -71,11 +72,16 @@ async def scan_once(force_notify: bool = False, full: bool = False) -> list[sign
     for sig in found:
         if sig.action == "HOLD":
             continue
-        prev = store.last_action(sig.symbol)
+        # Takroriy xabarlarning oldini olish: bir xil signal SIGNAL_COOLDOWN_H ichida qayta yuborilmaydi
+        last = store.last_signal(sig.symbol)
+        if last and last["action"] == sig.action and not force_notify:
+            try:
+                age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() / 3600
+            except ValueError:
+                age_h = 1e9
+            if age_h < config.SIGNAL_COOLDOWN_H:
+                continue
         store.save_signal(sig)
-        # Takroriy xabarlarning oldini olish: faqat signal o'zgarganda yuboriladi
-        if prev == sig.action and not force_notify:
-            continue
         msg = sig.text()
         block = None
         if config.AUTO_TRADE and sig.kind == "crypto" and sig.action == "BUY":

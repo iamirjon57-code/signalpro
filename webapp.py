@@ -204,6 +204,20 @@ async def api_dex_trades(request: Request, limit: int = 50):
     return {"positions": dex.positions(), "trades": dex.trades(limit), "stats": dex.stats()}
 
 
+# ---------- Strategiya testi ----------
+
+@app.get("/api/backtest")
+async def api_backtest():
+    import strategies
+    res = strategies.load() or {}
+    slim = {"ts": res.get("ts"), "symbols": {}}
+    for sym, s in (res.get("symbols") or {}).items():
+        slim["symbols"][sym] = {k: s.get(k) for k in ("bars", "from", "to", "error", "best", "classic")}
+        slim["symbols"][sym]["top"] = [{k: r[k] for k in ("strategy", "exit", "ok", "score", "all", "oos")}
+                                       for r in s.get("top") or []]
+    return slim
+
+
 # ---------- Telegram webhook ----------
 
 @app.post("/telegram/webhook")

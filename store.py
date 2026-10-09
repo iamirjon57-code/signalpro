@@ -44,7 +44,7 @@ def conn() -> sqlite3.Connection:
         _conn.executescript(SCHEMA)
         # Eski bazalar uchun migratsiya
         for table, col in (("trades", "pnl"), ("positions", "cost"), ("positions", "peak"),
-                           ("positions", "partial")):
+                           ("positions", "partial"), ("positions", "tp1"), ("positions", "trail")):
             cols = {r["name"] for r in _conn.execute(f"PRAGMA table_info({table})")}
             if col not in cols:
                 _conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} REAL")
@@ -89,6 +89,13 @@ def recent_signals(limit: int = 50, action: str | None = None) -> list[dict]:
             d["reasons"] = []
         out.append(d)
     return out
+
+
+def last_signal(symbol: str) -> dict | None:
+    r = conn().execute(
+        "SELECT action, created_at FROM signals WHERE symbol=? AND action != 'HOLD' ORDER BY id DESC LIMIT 1",
+        (symbol,)).fetchone()
+    return dict(r) if r else None
 
 
 def last_action(symbol: str) -> str | None:
@@ -153,10 +160,11 @@ def watchlist() -> list[str]:
 def save_position(symbol: str, pos: dict):
     with _lock:
         conn().execute(
-            "INSERT OR REPLACE INTO positions (symbol,amount,entry,tp,sl,mode,ts,cost,peak,partial) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO positions (symbol,amount,entry,tp,sl,mode,ts,cost,peak,partial,tp1,trail) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (symbol, pos["amount"], pos["entry"], pos["tp"], pos["sl"], pos.get("mode", ""),
-             pos.get("ts", _now()), pos.get("cost"), pos.get("peak"), pos.get("partial") or 0),
+             pos.get("ts", _now()), pos.get("cost"), pos.get("peak"), pos.get("partial") or 0,
+             pos.get("tp1"), pos.get("trail")),
         )
         conn().commit()
 
@@ -172,7 +180,8 @@ def load_positions() -> dict[str, dict]:
     return {r["symbol"]: {"amount": r["amount"], "entry": r["entry"], "tp": r["tp"],
                           "sl": r["sl"], "mode": r["mode"], "ts": r["ts"],
                           "cost": r["cost"], "peak": r["peak"] or r["entry"],
-                          "partial": int(r["partial"] or 0)} for r in rows}
+                          "partial": int(r["partial"] or 0), "tp1": r["tp1"], "trail": r["trail"]}
+            for r in rows}
 
 
 def realized_pnl_since(day: str) -> float:

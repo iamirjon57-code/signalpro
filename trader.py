@@ -318,11 +318,24 @@ def execute(signal) -> dict:
         entry = float(order.get("average") or signal.price)
         cost = float(order.get("cost") or config.TRADE_AMOUNT_USDT)
         held = _filled_base(order, symbol, cost / entry)
+        # Signal o'z TP/SL ini bergan bo'lsa (ATR asosida) — shu masofalar ishlatiladi
+        tp_pct, sl_pct, atr_based = config.TAKE_PROFIT_PCT / 100, config.STOP_LOSS_PCT / 100, False
+        try:
+            sp = float(signal.price)
+            t_ = float(getattr(signal, "take_profit", 0) or 0) / sp - 1
+            s_ = 1 - float(getattr(signal, "stop_loss", 0) or 0) / sp
+            if 0.002 < t_ < 0.5 and 0.002 < s_ < 0.3:
+                tp_pct, sl_pct, atr_based = t_, s_, True
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
         pos = {
             "amount": held, "entry": entry, "cost": cost,
             # TP/SL haqiqiy kirish narxidan hisoblanadi
-            "tp": entry * (1 + config.TAKE_PROFIT_PCT / 100),
-            "sl": entry * (1 - config.STOP_LOSS_PCT / 100),
+            "tp": entry * (1 + tp_pct),
+            "sl": entry * (1 - sl_pct),
+            # qisman foyda va trailing — TP masofasining ~55% ida
+            "tp1": entry * (1 + max(tp_pct * 0.55, config.PARTIAL_TP_PCT / 100 if not atr_based else 0.004)),
+            "trail": max(config.TRAILING_STOP_PCT / 100, sl_pct * 0.6) if atr_based else config.TRAILING_STOP_PCT / 100,
             "mode": mode(), "ts": datetime.now(timezone.utc).isoformat(),
             "peak": entry, "partial": 0,
         }
@@ -350,8 +363,11 @@ def manage(pos: dict, price: float) -> tuple[str | None, dict]:
     entry = float(pos["entry"])
     pos["peak"] = max(float(pos.get("peak") or entry), price)
     moved = None
-    if config.TRAILING_STOP_PCT > 0 and pos["peak"] >= entry * (1 + config.TRAIL_ACTIVATE_PCT / 100):
-        trail = pos["peak"] * (1 - config.TRAILING_STOP_PCT / 100)
+    tp1 = float(pos.get("tp1") or entry * (1 + config.PARTIAL_TP_PCT / 100))
+    act = float(pos.get("tp1") or entry * (1 + config.TRAIL_ACTIVATE_PCT / 100))
+    dist = float(pos.get("trail") or config.TRAILING_STOP_PCT / 100)
+    if config.TRAILING_STOP_PCT > 0 and pos["peak"] >= act:
+        trail = pos["peak"] * (1 - dist)
         if trail > pos["sl"]:
             pos["sl"], moved = trail, "Trailing SL"
     if price >= pos["tp"]:
@@ -360,8 +376,7 @@ def manage(pos: dict, price: float) -> tuple[str | None, dict]:
         if moved == "Trailing SL" or pos["sl"] > entry * 1.0005:
             return ("Trailing SL" if pos["sl"] > entry * 1.003 else "Breakeven"), pos
         return "SL", pos
-    if (not pos.get("partial") and config.PARTIAL_TP_SHARE > 0
-            and price >= entry * (1 + config.PARTIAL_TP_PCT / 100)):
+    if not pos.get("partial") and config.PARTIAL_TP_SHARE > 0 and price >= tp1:
         return "partial", pos
     return None, pos
 
@@ -384,7 +399,7 @@ def check_tp_sl(price_fn) -> list[dict]:
                     if p:   # qolgan qism uchun stop — kirish narxi (zararsiz)
                         p["sl"] = max(p["sl"], float(p["entry"]) * 1.002)
                         store.save_position(symbol, p)
-                    closed.append({**res, "reason": f"TP1 +{config.PARTIAL_TP_PCT:g}% "
+                    closed.append({**res, "reason": f"TP1 +{(price / float(pos['entry']) - 1) * 100:.1f}% "
                                                     f"({config.PARTIAL_TP_SHARE * 100:.0f}% sotildi, stop zararsiz nuqtada)"})
                 elif action:
                     res = _close(symbol, new, price, f"{action} hit")

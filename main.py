@@ -99,11 +99,12 @@ async def amain():
             log.warning("DIQQAT: REAL PUL bilan avto-savdo yoqilgan")
     import dex
     import research
-    import perf, econ, flows, alerts
+    import perf, econ, flows, alerts, strategies
+    perf.mark_strategy_start()
     await asyncio.gather(run_web(), run_bot(), engine.loop(), engine.tp_sl_loop(),
                          dex.loop(engine.broadcast), research.loop(engine.broadcast),
                          perf.loop(), econ.loop(engine.broadcast), flows.loop(engine.broadcast),
-                         alerts.loop(engine.send_to))
+                         alerts.loop(engine.send_to), strategies.loop())
 
 
 if __name__ == "__main__":

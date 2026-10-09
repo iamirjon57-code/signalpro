@@ -46,6 +46,54 @@ class Signal:
 
 def analyze(symbol: str, timeframe: str | None = None) -> Signal:
     timeframe = timeframe or config.TIMEFRAME
+    if (config.STRATEGY != "classic" and timeframe == "1h"
+            and data.asset_class(symbol) == "crypto"):
+        return analyze_strategy(symbol)
+    return analyze_classic(symbol, timeframe)
+
+
+def analyze_strategy(symbol: str) -> Signal:
+    """Tarixiy sinovda tasdiqlangan strategiya bo'yicha signal (yopilgan 1s sham asosida)."""
+    import strategies
+    df = strategies.prepare(symbol, 300)
+    r = df.iloc[-1]
+    try:
+        price = float(data.fetch(symbol, "1h", 3)["close"].iloc[-1])   # joriy narx
+    except Exception:  # noqa: BLE001
+        price = float(r["close"])
+    trend = "up" if r["ma_fast"] > r["ma_slow"] else ("down" if r["ma_fast"] < r["ma_slow"] else "flat")
+    state = [f"4s trend: {'yuqoriga' if r['htf'] == 1 else 'pastga' if r['htf'] == -1 else '—'} · "
+             f"1s trend: {'yuqoriga' if trend == 'up' else 'pastga' if trend == 'down' else 'yon'} · RSI {r['rsi']:.0f}"]
+    ch = strategies.choice(symbol)
+    side, conf = 0, 0
+    if not ch:
+        reasons = ["Tarixiy sinovda bu tanga uchun foydali strategiya topilmadi — savdo qilinmaydi"] + state
+        exit_name = "atr15"
+    else:
+        exit_name = ch["exit"]
+        side = int(strategies.raw_signals(df, ch["strategy"]).iloc[-1])
+        oos = (ch.get("oos") or {})
+        conf = int(oos.get("winrate") or 55)
+        name = strategies.NAMES.get(ch["strategy"], ch["strategy"])
+        if side:
+            reasons = [f"Strategiya: {name}", f"Stop: {strategies.EXITS.get(exit_name, exit_name)}"]
+            if oos.get("n"):
+                reasons.append(f"Tarixiy tekshiruv: {oos['n']} savdo, foydali {oos['winrate']:.0f}%, "
+                               f"o'rtacha {oos['avg']:+.2f}%")
+        else:
+            reasons = [f"Strategiya: {name} — hozir kirish sharti yo'q, kutilmoqda"]
+        reasons += state
+    action = {1: "BUY", -1: "SELL"}.get(side, "HOLD")
+    tp, sl = strategies.levels(price, float(r.get("atr") or 0), side or 1, exit_name)
+    return Signal(
+        symbol=symbol, kind="crypto", action=action, price=price, score=side * 3,
+        confidence=conf if side else 0, rsi=float(r["rsi"]), macd_hist=float(r["macd_hist"]),
+        trend=trend, take_profit=round(tp, 8), stop_loss=round(sl, 8), reasons=reasons,
+        timeframe="1h", created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def analyze_classic(symbol: str, timeframe: str) -> Signal:
     df = enrich(data.fetch(symbol, timeframe), config.RSI_PERIOD)
     r = df.iloc[-1]
     p = df.iloc[-2]

@@ -21,6 +21,7 @@ import alerts
 import econ
 import flows
 import perf
+import strategies
 import market
 import research
 import investors
@@ -58,6 +59,7 @@ HELP = """*Signal Pro* — savdo signallari boti
 /ideas — AI investitsiya g'oyalari
 /report — kunlik hisobot (hozir)
 /stats — signallar statistikasi (necha foizi to'g'ri chiqdi)
+/backtest — strategiyalarning tarixiy sinovi
 /calendar — iqtisodiy taqvim (Fed, inflyatsiya, NFP)
 /whales — kitlar va futures (long/short, ochiq pozitsiyalar)
 /alert `BTC 90000` — narx ogohlantirishi
@@ -196,8 +198,16 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _ai_analyze(q.message, d[3:], update)
     elif d.startswith("stats:"):
         text = await asyncio.to_thread(perf.summary_text, int(d[6:]))
-        kb = q.message.reply_markup if hasattr(q.message, "reply_markup") else None
-        await _say(q.message, text, kb, edit=True)
+        await _say(q.message, text, _stats_kb(), edit=True)
+    elif d == "bt":
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Qayta sinash", callback_data="bt:run")]]) if _admin(update) else None
+        await _say(q.message, strategies.report_text(), kb)
+    elif d == "bt:run":
+        if not await _only_admin(update):
+            return
+        m = await q.message.reply_text("🧪 Strategiyalar tarixiy ma'lumotda qayta sinalmoqda (1-2 daqiqa)...")
+        await asyncio.to_thread(strategies.run_all)
+        await _say(m, strategies.report_text(), edit=True)
     elif d.startswith("adel:"):
         ok = await asyncio.to_thread(alerts.delete_alert, update.effective_chat.id, int(d[5:]))
         await q.message.reply_text("🗑 Ogohlantirish o'chirildi." if ok else "Topilmadi.",
@@ -691,10 +701,25 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = await asyncio.to_thread(perf.summary_text, 30)
     except Exception as e:  # noqa: BLE001
         text = f"❌ Statistika xatosi: {e}"
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("7 kun", callback_data="stats:7"),
-                                InlineKeyboardButton("30 kun", callback_data="stats:30"),
-                                InlineKeyboardButton("90 kun", callback_data="stats:90")]])
-    await _say(m, text, kb, edit=True)
+    await _say(m, text, _stats_kb(), edit=True)
+
+
+def _stats_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("7 kun", callback_data="stats:7"),
+                                  InlineKeyboardButton("30 kun", callback_data="stats:30"),
+                                  InlineKeyboardButton("90 kun", callback_data="stats:90")],
+                                 [InlineKeyboardButton("🧪 Strategiya testi", callback_data="bt")]])
+
+
+async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if ctx.args and ctx.args[0].lower() in ("run", "yangila") and _admin(update):
+        m = await msg.reply_text("🧪 Strategiyalar tarixiy ma'lumotda qayta sinalmoqda (1-2 daqiqa)...")
+        await asyncio.to_thread(strategies.run_all)
+        await _say(m, strategies.report_text(), edit=True)
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Qayta sinash", callback_data="bt:run")]]) if _admin(update) else None
+    await _say(msg, strategies.report_text(), kb)
 
 
 async def cmd_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -893,6 +918,7 @@ def build_app() -> Application:
         "global": cmd_global, "ideas": cmd_ideas, "report": cmd_report,
         "stats": cmd_stats, "calendar": cmd_calendar, "whales": cmd_whales, "alert": cmd_alert,
         "alerts": cmd_alert, "port": cmd_port, "portfolio": cmd_port, "google": cmd_google,
+        "backtest": cmd_backtest,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))

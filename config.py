@@ -154,7 +154,7 @@ NEWS_ALERT_INTERVAL_MIN = _f("NEWS_ALERT_INTERVAL_MIN", 60)
 NEWS_ALERT_MAX = int(_f("NEWS_ALERT_MAX", 2))
 
 # --- Signallar statistikasi ---
-PERF_EVAL_HOURS = _f("PERF_EVAL_HOURS", 24)      # signal natijasi necha soat ichida baholanadi
+PERF_EVAL_HOURS = _f("PERF_EVAL_HOURS", 48)      # signal natijasi necha soat ichida baholanadi
 PERF_DEDUP_HOURS = _f("PERF_DEDUP_HOURS", 6)     # shu oraliqdagi takroriy signal bitta sanaladi
 
 # --- Iqtisodiy taqvim ---
@@ -178,3 +178,15 @@ WHALE_ALERT_X = _f("WHALE_ALERT_X", 25)          # 15 daqiqada sof oqim chegara 
 
 # --- Narx ogohlantirishlari ---
 MAX_ALERTS = int(_f("MAX_ALERTS", 20))
+
+# --- Strategiya (kripto) ---
+# auto — har bir tanga uchun tarixiy sinovda eng yaxshi (va tasdiqlangan) strategiya tanlanadi;
+# classic — eski ball usuli; yoki aniq nom: pullback | macd_trend | breakout | dip
+STRATEGY = _env("STRATEGY", "auto").lower()
+STRATEGY_EXIT = _env("STRATEGY_EXIT", "atr15").lower()   # aniq strategiya tanlanganda: fixed | atr15 | atr2
+BT_FEE_PCT = _f("BT_FEE_PCT", 0.2)            # komissiya + sirpanish (ikki tomon, %)
+BT_MAX_HOLD_H = _f("BT_MAX_HOLD_H", 48)
+BT_MIN_TRADES_IS = int(_f("BT_MIN_TRADES_IS", 6))
+BT_MIN_TRADES_OOS = int(_f("BT_MIN_TRADES_OOS", 3))
+BT_REFRESH_H = _f("BT_REFRESH_H", 24)
+SIGNAL_COOLDOWN_H = _f("SIGNAL_COOLDOWN_H", 4)  # bir xil signal shu vaqt ichida qayta yuborilmaydi

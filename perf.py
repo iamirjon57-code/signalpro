@@ -126,9 +126,21 @@ def evaluate_pending() -> int:
     return n
 
 
-def summary(days: int = 30) -> dict:
+def strategy_since() -> str | None:
+    import research
+    return research.kv_get("strategy_since")
+
+
+def mark_strategy_start():
+    """Yangi strategiya ishga tushgan vaqt — statistika undan keyingi signallarni alohida ko'rsatadi."""
+    import research
+    if config.STRATEGY != "classic" and not research.kv_get("strategy_since"):
+        research.kv_set("strategy_since", datetime.now(timezone.utc).isoformat())
+
+
+def summary(days: int = 30, since: str | None = None) -> dict:
     c = _db()
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    since = since or (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     rows = [dict(r) for r in c.execute(
         "SELECT * FROM signal_results WHERE outcome IN ('win','loss','flat') AND created_at >= ?",
         (since,)).fetchall()]
@@ -169,8 +181,13 @@ def _line(a: dict) -> str:
 def summary_text(days: int = 30) -> str:
     s = summary(days)
     lines = [f"*📈 Signallar statistikasi — oxirgi {days} kun*",
-             f"(har bir signal {config.PERF_EVAL_HOURS:g} soat ichida TP yoki SL ga yetdimi — shu tekshiriladi)", "",
-             f"*Hammasi:* {_line(s['all'])}",
+             f"(har bir signal {config.PERF_EVAL_HOURS:g} soat ichida TP yoki SL ga yetdimi — shu tekshiriladi)", ""]
+    ss = strategy_since()
+    if ss:
+        n = summary(days, since=ss)
+        lines += [f"*🆕 Yangi strategiya ({ss[:10]} dan beri):* {_line(n['all'])}",
+                  "(eski usuldagi signallar quyidagi umumiy hisobda)", ""]
+    lines += [f"*Hammasi:* {_line(s['all'])}",
              f"🟢 BUY: {_line(s['buy'])}",
              f"🔴 SELL: {_line(s['sell'])}"]
     if s["symbols"]:
