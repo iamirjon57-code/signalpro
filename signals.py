@@ -89,6 +89,22 @@ def analyze(symbol: str, timeframe: str | None = None) -> Signal:
         score -= 1
         reasons.append("Narx Bollinger yuqori chizig'ida — korreksiya ehtimoli")
 
+    # 5) Katta vaqt oralig'idagi trend bilan tasdiqlash (faqat kripto — aksiya/forex API limitini tejaymiz)
+    htf = config.SIGNAL_HTF
+    if htf and htf != timeframe and data.asset_class(symbol) == "crypto" and abs(score) >= config.MIN_SCORE:
+        try:
+            h = enrich(data.fetch(symbol, htf, 120), config.RSI_PERIOD).iloc[-1]
+            if score > 0 and h["ma_fast"] < h["ma_slow"]:
+                score -= 1
+                reasons.append(f"{htf} trend pastga — xarid signali kuchsizlandi")
+            elif score < 0 and h["ma_fast"] > h["ma_slow"]:
+                score += 1
+                reasons.append(f"{htf} trend yuqoriga — sotuv signali kuchsizlandi")
+            else:
+                reasons.append(f"{htf} trend signalni tasdiqlaydi")
+        except Exception as e:  # noqa: BLE001
+            log.warning("HTF %s %s: %s", symbol, htf, e)
+
     if score >= config.MIN_SCORE:
         action = "BUY"
     elif score <= -config.MIN_SCORE:

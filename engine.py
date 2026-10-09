@@ -6,6 +6,7 @@ import logging
 
 import config
 import data
+import market
 import signals
 import store
 import trader
@@ -61,7 +62,12 @@ async def scan_once(force_notify: bool = False, full: bool = False) -> list[sign
         if prev == sig.action and not force_notify:
             continue
         msg = sig.text()
-        if config.AUTO_TRADE and sig.kind == "crypto":
+        block = None
+        if config.AUTO_TRADE and sig.kind == "crypto" and sig.action == "BUY":
+            block = await asyncio.to_thread(market.buy_block_reason, sig.symbol)
+            if block:
+                msg += f"\n\n⏸ Avto-savdo o'tkazilmadi: {block}"
+        if config.AUTO_TRADE and sig.kind == "crypto" and not block:
             try:
                 res = await asyncio.to_thread(trader.execute, sig)
                 msg += f"\n\n🤖 Avto-savdo ({res['mode']}): {res['side']} {res['amount']:g} @ {res['price']:g}"

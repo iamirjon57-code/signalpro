@@ -200,3 +200,18 @@ async def api_dex_check(q: str = Query(...)):
 async def api_dex_trades(request: Request, limit: int = 50):
     _auth(request)
     return {"positions": dex.positions(), "trades": dex.trades(limit), "stats": dex.stats()}
+
+
+# ---------- Telegram webhook ----------
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    import telegram_bot as tb
+    from telegram import Update
+    if tb.APP is None:
+        raise HTTPException(503, "bot hali tayyor emas")
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != tb.webhook_secret():
+        raise HTTPException(403)
+    data = await request.json()
+    await tb.APP.update_queue.put(Update.de_json(data, tb.APP.bot))
+    return {"ok": True}

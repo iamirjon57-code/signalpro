@@ -37,17 +37,50 @@ async def run_bot():
     if not config.TELEGRAM_TOKEN:
         log.warning("TELEGRAM_TOKEN yo'q — bot o'chiq, faqat web ishlaydi")
         return
-    from telegram_bot import build_app
+    from telegram import Update
+    from telegram_bot import build_app, webhook_secret
     app = build_app()
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    log.info("Telegram bot ishga tushdi")
+    use_webhook = config.TELEGRAM_MODE == "webhook" or (
+        config.TELEGRAM_MODE == "auto" and bool(config.WEBHOOK_BASE))
+    if not use_webhook:
+        await app.updater.start_polling(drop_pending_updates=True)
+        log.info("Telegram bot ishga tushdi (polling)")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            with contextlib.suppress(Exception):
+                await app.updater.stop()
+                await app.stop()
+                await app.shutdown()
+        return
+
+    host = config.WEBHOOK_BASE.replace("https://", "").replace("http://", "").strip("/")
+    url = f"https://{host}/telegram/webhook"
+    secret = webhook_secret()
+
+    async def _set():
+        await app.bot.set_webhook(url, secret_token=secret, allowed_updates=Update.ALL_TYPES,
+                                  max_connections=20)
+
+    await asyncio.sleep(3)   # sayt ishga tushib olsin
+    await _set()
+    log.info("Telegram bot ishga tushdi (webhook: %s)", url)
     try:
-        await asyncio.Event().wait()
+        while True:
+            # Boshqa nusxa (eski server) webhook'ni o'chirib qo'ysa — qayta o'rnatamiz
+            await asyncio.sleep(120)
+            try:
+                info = await app.bot.get_webhook_info()
+                if info.url != url:
+                    log.warning("Webhook o'zgartirilgan (%r) — boshqa bot nusxasi ishlayapti. Qayta o'rnatildi.",
+                                info.url)
+                    await _set()
+            except Exception as e:  # noqa: BLE001
+                log.warning("webhook tekshiruvi: %s", e)
     finally:
         with contextlib.suppress(Exception):
-            await app.updater.stop()
             await app.stop()
             await app.shutdown()
 

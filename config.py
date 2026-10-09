@@ -115,3 +115,17 @@ DEX_MAX_HOLD_H = _f("DEX_MAX_HOLD_H", 48)
 DEX_DAILY_LOSS_LIMIT = _f("DEX_DAILY_LOSS_LIMIT", 30)
 DEX_PAPER_BALANCE = _f("DEX_PAPER_BALANCE", 1000)
 DEX_SCAN_INTERVAL_SEC = int(_f("DEX_SCAN_INTERVAL_SEC", 300))
+
+# --- Telegram ulanish usuli ---
+# auto: sayt manzili bo'lsa webhook (tavsiya), bo'lmasa polling. Webhook'da botni boshqa
+# nusxa (masalan, eski serverdagi) "o'g'irlay olmaydi" — tugmalar doim shu nusxaga keladi.
+TELEGRAM_MODE = _env("TELEGRAM_MODE", "auto").lower()
+WEBHOOK_BASE = _env("WEBHOOK_BASE", "") or _env("RAILWAY_PUBLIC_DOMAIN", "")
+
+# --- Bozor kayfiyati filtrlari (faqat kripto avto-savdo xaridlari uchun) ---
+# Fear & Greed indeksi shu qiymatdan yuqori bo'lsa (haddan tashqari ochko'zlik) — yangi xarid yo'q
+FNG_MAX_BUY = _f("FNG_MAX_BUY", 85)
+# Funding rate (8 soatlik, %) shundan yuqori bo'lsa — bozor haddan tashqari "long"da, xarid yo'q
+FUNDING_MAX_BUY = _f("FUNDING_MAX_BUY", 0.08)
+# Signalni katta vaqt oralig'idagi trend bilan tasdiqlash (kripto). Bo'sh = o'chiq
+SIGNAL_HTF = _env("SIGNAL_HTF", "4h")

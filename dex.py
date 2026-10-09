@@ -301,6 +301,40 @@ def _honeypot(chain: str, address: str) -> dict:
     return out
 
 
+def _goplus_solana(address: str) -> dict:
+    """GoPlus Solana: mint, muzlatish, balansni o'zgartirish, o'tkazma to'lovi va boshqa huquqlar."""
+    j = _get(f"https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={address}", ttl=1800)
+    res = (j or {}).get("result") or {}
+    d = res.get(address) or next(iter(res.values()), None)
+    if not d:
+        return {"ok": None, "bad": [], "warn": []}
+    st = lambda k: str((d.get(k) or {}).get("status", "0")) == "1" if isinstance(d.get(k), dict) else False  # noqa: E731
+    bad, warn = [], []
+    if st("mintable"):
+        bad.append("Egasi yangi tanga chiqara oladi (mint yopilmagan)")
+    if st("freezable"):
+        bad.append("Egasi hamyoningizdagi tangani muzlatib qo'ya oladi")
+    if st("balance_mutable_authority"):
+        bad.append("Egasi balanslarni o'zgartira oladi")
+    if str(d.get("non_transferable", "0")) == "1":
+        bad.append("Tangani o'tkazib/sotib bo'lmaydi (non-transferable)")
+    for k in ("mintable", "freezable", "balance_mutable_authority", "metadata_mutable"):
+        v = d.get(k) or {}
+        auths = (v.get("authority") or []) + (v.get("metadata_upgrade_authority") or []) if isinstance(v, dict) else []
+        if any(str((a or {}).get("malicious_address", "0")) == "1" for a in auths if isinstance(a, dict)):
+            bad.append("Huquq egasi firibgar deb belgilangan manzil")
+            break
+    if st("closable"):
+        warn.append("Tanga hisobini yopish huquqi bor")
+    if d.get("transfer_hook"):
+        warn.append("O'tkazmaga qo'shimcha kod ulangan (transfer hook)")
+    if d.get("transfer_fee"):
+        warn.append("O'tkazma to'lovi (transfer fee) bor")
+    if st("transfer_fee_upgradable"):
+        warn.append("O'tkazma to'lovini keyinroq o'zgartirish mumkin")
+    return {"ok": not bad, "bad": bad, "warn": warn}
+
+
 def _sol_security(address: str) -> dict:
     """RugCheck to'liq hisoboti: xavflar, yaratuvchi ulushi, insayderlar, eng yirik egalar."""
     j = _get(f"https://api.rugcheck.xyz/v1/tokens/{address}/report", ttl=1800) or {}
@@ -351,13 +385,32 @@ def _sol_security(address: str) -> dict:
     return {"ok": not bad, "bad": bad, "warn": warn[:7], "source": "RugCheck"}
 
 
+def _solana_security(address: str) -> dict:
+    """Solana: RugCheck + GoPlus. Ikkalasidan biri javob bersa ham natija bor; xavflar birlashtiriladi."""
+    parts, sources = [], []
+    for name, fn in (("RugCheck", _sol_security), ("GoPlus", _goplus_solana)):
+        try:
+            r = fn(address)
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s (%s): %s", name, address, e)
+            continue
+        if r.get("ok") is not None:
+            parts.append(r)
+            sources.append(name)
+    if not parts:
+        return {"ok": None, "bad": [], "warn": [], "source": ""}
+    bad = list(dict.fromkeys(b for p in parts for b in p["bad"]))
+    warn = list(dict.fromkeys(w for p in parts for w in p["warn"]))[:8]
+    return {"ok": not bad, "bad": bad, "warn": warn, "source": " + ".join(sources)}
+
+
 def security(chain: str, address: str) -> dict:
     """Kontrakt xavfsizligi. ok=None — tekshirib bo'lmadi (avto-savdo bunday tangani olmaydi)."""
     try:
         if chain in EVM_CHAIN_IDS:
             return _evm_security(chain, address)
         if chain == "solana":
-            return _sol_security(address)
+            return _solana_security(address)
     except Exception as e:  # noqa: BLE001
         log.warning("xavfsizlik tekshiruvi (%s %s): %s", chain, address, e)
     return {"ok": None, "bad": [], "warn": [], "source": ""}

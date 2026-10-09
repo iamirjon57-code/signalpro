@@ -16,12 +16,21 @@ import config
 import data
 import dex
 import engine
+import market
 import investors
 import signals
 import store
 import trader
 
 log = logging.getLogger("bot")
+
+APP: Application | None = None   # webhook uchun (webapp shu orqali yangilanishlarni uzatadi)
+
+
+def webhook_secret() -> str:
+    """Telegram webhook so'rovlarini tekshirish uchun maxfiy kalit (tokendan hosil qilinadi)."""
+    import hashlib
+    return hashlib.sha256(("signalpro:" + config.TELEGRAM_TOKEN).encode()).hexdigest()[:48]
 
 HELP = """*Signal Pro* — savdo signallari boti
 
@@ -37,6 +46,7 @@ HELP = """*Signal Pro* — savdo signallari boti
 /positions — ochiq pozitsiyalar
 /trades — oxirgi savdolar
 /mode — avto-savdo rejimi
+/market — bozor holati (kayfiyat indeksi, BTC ulushi, funding)
 /dex `NOM yoki MANZIL` — DexScreener'dan tangani tekshirish (firibgarlik filtri bilan)
 /stop — signallarni to'xtatish
 /start — obuna bo'lish"""
@@ -50,10 +60,11 @@ B_POS, B_TRADES = "💼 Pozitsiyalar", "📜 Savdolar"
 B_BAL, B_MODE = "💰 Balans", "⚙️ Rejim"
 B_INV, B_HELP = "🏦 Investorlar", "❓ Yordam"
 B_DEX = "🦎 DEX tangalar"
+B_MARKET = "🌡 Bozor holati"
 
 MENU = ReplyKeyboardMarkup(
     [[B_SIGNAL, B_SCAN], [B_TOP, B_NEWS], [B_POS, B_TRADES], [B_BAL, B_MODE],
-     [B_DEX, B_INV], [B_HELP]],
+     [B_DEX, B_MARKET], [B_INV, B_HELP]],
     resize_keyboard=True,
 )
 
@@ -474,6 +485,12 @@ async def _dex_config(message):
                f"Kunlik zarar limiti ${c.DEX_DAILY_LOSS_LIMIT:g}")
 
 
+async def cmd_market(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    m = await update.message.reply_text("⏳ Bozor holati yuklanmoqda...")
+    text = await asyncio.to_thread(market.summary_text)
+    await _say(m, text, edit=True)
+
+
 _SYMBOL_RE = re.compile(r"^[A-Za-z0-9]{2,10}(/[A-Za-z]{3,5})?$")
 
 
@@ -483,7 +500,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     routes = {
         B_SIGNAL: cmd_signal, B_SCAN: cmd_scan, B_TOP: cmd_top, B_NEWS: cmd_news,
         B_POS: cmd_positions, B_TRADES: cmd_trades, B_BAL: cmd_balance, B_MODE: cmd_mode,
-        B_INV: cmd_investors, B_HELP: cmd_help, B_DEX: cmd_dex,
+        B_INV: cmd_investors, B_HELP: cmd_help, B_DEX: cmd_dex, B_MARKET: cmd_market,
     }
     fn = routes.get(text)
     if fn:
@@ -506,11 +523,12 @@ def build_app() -> Application:
         "scan": cmd_scan, "top": cmd_top, "watch": cmd_watch, "unwatch": cmd_unwatch,
         "list": cmd_list, "news": cmd_news, "investors": cmd_investors,
         "balance": cmd_balance, "positions": cmd_positions, "trades": cmd_trades,
-        "mode": cmd_mode, "dex": cmd_dex,
+        "mode": cmd_mode, "dex": cmd_dex, "market": cmd_market,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_error_handler(_on_error)
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
 
@@ -544,4 +562,18 @@ def build_app() -> Application:
         ])
 
     app.post_init = _post_init
+    global APP
+    APP = app
     return app
+
+
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Tugma yoki buyruq xato bersa — jim qolmasdan foydalanuvchiga aytadi va logga yozadi."""
+    log.error("Bot handler xatosi: %s", context.error, exc_info=context.error)
+    msg = update.effective_message if isinstance(update, Update) else None
+    if msg is None:
+        return
+    try:
+        await msg.reply_text(f"❌ Xatolik yuz berdi: {str(context.error)[:200]}\nQayta urinib ko'ring.")
+    except Exception:  # noqa: BLE001
+        pass
