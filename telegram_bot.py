@@ -331,7 +331,7 @@ async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         kb = InlineKeyboardMarkup(_rows(
             [InlineKeyboardButton(t, callback_data=f"gnews:{q}") for t, q in NEWS_TOPICS], 2))
-        note = ("Dunyo nashrlari (Cointelegraph, CoinDesk, CNBC, Yahoo Finance, MarketWatch va b.) — "
+        note = ("Dunyo nashrlari (Cointelegraph, CoinDesk, CNBC, MarketWatch, Google News va b.) — "
                 + ("AI o'zbekchaga o'girib, bozorga ta'sirini aytadi." if ai.enabled() else "inglizcha sarlavhalar."))
         await update.message.reply_text(f"📰 Qaysi mavzu bo'yicha yangiliklar kerak?\n\n{note}", reply_markup=kb)
         return

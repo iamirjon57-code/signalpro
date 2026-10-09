@@ -1,8 +1,7 @@
 """Global manbalar: dunyo yangiliklari, DeFi/DEX bozori, trend tangalar, kunlik hisobot.
 
 Manbalar (bepul, kalitsiz):
-  * Yangiliklar (RSS): Cointelegraph, CoinDesk, Decrypt, The Block, CNBC, Yahoo Finance,
-    MarketWatch, Google News
+  * Yangiliklar (RSS): Cointelegraph, CoinDesk, Decrypt, The Block, CNBC, MarketWatch, Google News
   * DefiLlama — DEX birjalar savdo hajmi, blokcheyn tarmoqlari TVL
   * CoinGecko — trenddagi tangalar
   * GeckoTerminal — trenddagi DEX hovuzlari
@@ -41,7 +40,6 @@ FEEDS = {
     "markets": [
         ("CNBC", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
         ("CNBC Investing", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069"),
-        ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
         ("MarketWatch", "https://feeds.marketwatch.com/marketwatch/topstories/"),
     ],
 }

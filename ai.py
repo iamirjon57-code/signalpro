@@ -109,7 +109,7 @@ def _market_context(symbol: str | None = None) -> str:
 
 
 def _news_context(symbol: str, n: int = 8) -> str:
-    """Global lentalar (Cointelegraph, CoinDesk, CNBC, Yahoo...) + Google News."""
+    """Global lentalar (Cointelegraph, CoinDesk, CNBC, MarketWatch...) + Google News."""
     import research
     items = research.symbol_news(symbol, n)
     lines = [f"- {i['title'][:160]} ({i['source']}, {research.age(i['ts'])} oldin)" for i in items]
